@@ -1,0 +1,26 @@
+col,label
+molten_temp,용탕 온도 (℃)
+molten_volume,용탕 부피 (cm³)
+sleeve_temperature,슬리브 온도 (℃)
+EMS_operation_time,EMS 작동시간 (s)
+low_section_speed,저속 구간 속도 (mm/s)
+high_section_speed,고속 구간 속도 (mm/s)
+cast_pressure,주조 압력 (bar)
+biscuit_thickness,비스킷 두께 (mm)
+physical_strength, 형체력 (kgf)
+upper_mold_temp1,상형 온도1 (℃)
+upper_mold_temp2,상형 온도2 (℃)
+upper_mold_temp3,상형 온도3 (℃)
+lower_mold_temp1,하형 온도1 (℃)
+lower_mold_temp2,하형 온도2 (℃)
+lower_mold_temp3,하형 온도3 (℃)
+Coolant_temperature,냉각수 온도 (℃)
+mold_code,금형 코드
+passorfail,합/불
+working, 작업 여부
+tryshot_signal,트라이샷 신호
+heating_furnace,가열로 상태
+facility_operation_cycleTime, 설비 작동 사이클 시간 (s)
+production_cycletime, 제품 생산 사이클 시간 (s)
+registration_time, 등록 일시
+count, 일자별 생산 번호

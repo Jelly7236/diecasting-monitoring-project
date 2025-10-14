@@ -1,0 +1,43 @@
+/* 공장 대시보드 스타일 */
+body {
+  background-color: #1b1e23; /* 공장 모니터 같은 어두운 배경 */
+  color: #e0e0e0;
+  font-family: "Roboto", "맑은 고딕", sans-serif;
+}
+
+.navbar {
+  background-color: #2b2f36 !important; /* 상단 네비게이션 */
+  border-bottom: 2px solid #ffcc00; /* 안전 경고색 강조 */
+}
+
+.nav-link,
+.navbar-brand {
+  color: #f8f9fa !important;
+  font-weight: bold;
+}
+
+.card {
+  background-color: #2c3037;
+  border: 1px solid #444;
+  border-radius: 10px;
+  padding: 10px;
+}
+
+h1,
+h2,
+h3 {
+  color: #ffcc00; /* 공장 안전표지 느낌의 강조색 */
+  font-weight: bold;
+}
+
+.btn-primary {
+  background-color: #ffcc00;
+  border-color: #ffcc00;
+  color: black;
+  font-weight: bold;
+}
+
+.btn-primary:hover {
+  background-color: #ffaa00;
+  border-color: #ffaa00;
+}
