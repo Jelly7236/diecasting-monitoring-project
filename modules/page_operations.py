@@ -27,7 +27,7 @@ def ui_operations():
 
         ui.card(
             ui.card_header("실시간 센서 모니터링"),
-            ui.ou tput_plot("live_plot", height="400px")
+            ui.output_plot("live_plot", height="400px")
         ),
 
         ui.layout_columns(
@@ -37,10 +37,10 @@ def ui_operations():
 
 
 def server_operations(input, output, session):
-    # Reactive 상태 관리
-    streamer = reactive.Value(RealTimeStreamer(streaming_df[SENSOR_COLS]))
-    current_data = reactive.Value(pd.DataFrame())
-    is_streaming = reactive.Value(False)
+    # ✅ Reactive 상태 관리 - reactive.value로 수정
+    streamer = reactive.value(RealTimeStreamer(streaming_df[SENSOR_COLS]))
+    current_data = reactive.value(pd.DataFrame())
+    is_streaming = reactive.value(False)
 
     # ▶ 시작
     @reactive.effect
@@ -61,7 +61,9 @@ def server_operations(input, output, session):
     @reactive.event(input.reset)
     def _reset():
         print("[INFO] 🔄 Reset pressed")
-        streamer().reset_stream()
+        # streamer 자체를 새로 생성하거나 reset 호출
+        current_streamer = streamer()
+        current_streamer.reset_stream()
         current_data.set(pd.DataFrame())
         is_streaming.set(False)
 
@@ -71,11 +73,11 @@ def server_operations(input, output, session):
         if not is_streaming():
             return
 
-        reactive.invalidate_later(1000)  # 1초마다 실행
+        reactive.invalidate_later(1.0)  # 1초마다 실행
 
         s = streamer()
         next_batch = s.get_next_batch(1)
-        if next_batch is not None:
+        if next_batch is not None and not next_batch.empty:
             df = s.get_current_data()
             current_data.set(df)
             print(f"[LOOP] index={s.current_index}, shape={df.shape}")
@@ -89,27 +91,37 @@ def server_operations(input, output, session):
     def stream_status():
         if is_streaming():
             progress = streamer().progress()
-            return ui.div(f"🟢 스트리밍 중 ({progress:.1f}%)", class_="fw-bold text-success")
+            return ui.div(f"🟢 스트리밍 중 ({progress:.3f}%)", class_="fw-bold text-success")
         return ui.div("🔴 정지됨", class_="fw-bold text-danger")
 
     # ✅ Matplotlib 실시간 그래프
     @output
     @render.plot
     def live_plot():
-        # 👇 여기서 current_data()를 반드시 reactive 참조해야함
+        # 반드시 reactive 참조
         df = current_data()
+        
         fig, ax = plt.subplots(figsize=(10, 4))
+        
         if df.empty:
-            ax.text(0.5, 0.5, "▶ Start Streaming", ha="center", va="center")
+            ax.text(0.5, 0.5, "▶ Start Streaming", ha="center", va="center", fontsize=14)
+            ax.set_xlim(0, 1)
+            ax.set_ylim(0, 1)
             ax.set_xticks([])
             ax.set_yticks([])
-            return fig
-
-        for col in SENSOR_COLS[:2]:
-            ax.plot(df[col].values, label=col)
-        ax.legend()
-        ax.set_title("Real Time Sensor Data (1초 간격)")
-        ax.grid(True)
+        else:
+            # 데이터가 있을 때만 플롯
+            for col in SENSOR_COLS[:2]:  # 처음 2개 센서만
+                if col in df.columns:
+                    ax.plot(df.index, df[col].values, label=col, marker='o', markersize=3)
+            
+            ax.legend(loc='best')
+            ax.set_title("Real Time Sensor Data (1초 간격)")
+            ax.set_xlabel("Index")
+            ax.set_ylabel("Sensor Value")
+            ax.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
         return fig
 
     # ✅ 최근 데이터
