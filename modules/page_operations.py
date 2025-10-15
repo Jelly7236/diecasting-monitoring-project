@@ -1,7 +1,8 @@
 # modules/page_operations.py
 from shiny import ui, render, reactive
 import pandas as pd
-from shared import streaming_df
+import numpy as np
+from shared import streaming_df, iso_model, iso_features
 from utils.real_time_streamer import RealTimeStreamer
 from utils.kpi_metrics import calculate_realtime_metrics
 from viz.operation_plots import plot_live, plot_oee, plot_mold_pie, plot_mold_ratio
@@ -51,9 +52,6 @@ def ui_operations():
 
         ui.div(
             ui.h4("실시간 모니터링", class_="mt-4 mb-3"),
-            # -----------------------------
-            # 상단: 스트리밍 제어 + KPI 그리드
-            # -----------------------------
             ui.layout_columns(
                 # 좌측: 스트리밍 그래프
                 ui.card(
@@ -147,7 +145,6 @@ def ui_operations():
                     )
                     for mold in MOLD_CODES
                 ],
-                # ✅ CSS Grid로 5등분 균등 분할
                 style="""
                     display: grid;
                     grid-template-columns: repeat(5, 1fr);
@@ -167,11 +164,16 @@ def ui_operations():
             ),
 
             # -----------------------------
-            # 최하단: 최근 데이터 로그
+            # 최하단: 로그 테이블
             # -----------------------------
+            ui.hr(),
             ui.card(
                 ui.card_header("🗒 최근 데이터 로그"),
                 ui.output_table("recent_data")
+            ),
+            ui.card(
+                ui.card_header("⚠️ 최근 이상치 로그"),
+                ui.output_table("recent_abnormal")
             ),
 
             style="max-width: 1400px; margin: 0 auto; padding: 0 1rem;"
@@ -204,6 +206,9 @@ def server_operations(input, output, session):
         current_data.set(pd.DataFrame())
         is_streaming.set(False)
 
+    # -----------------------------
+    # 스트리밍 루프
+    # -----------------------------
     @reactive.effect
     def _stream_loop():
         reactive.invalidate_later(1)
@@ -224,30 +229,56 @@ def server_operations(input, output, session):
         return ui.div(text, class_="status-badge text-white", style=f"background:{color};")
 
     # -----------------------------
+    # 이상치 탐지 함수
+    # -----------------------------
+    def detect_anomalies(df):
+        if df.empty or iso_model is None:
+            return df
+        # 필요한 feature만 맞춰서 선택
+        X = df.copy()
+        missing_cols = [c for c in iso_features if c not in X.columns]
+        for c in missing_cols:
+            X[c] = 0
+        X = X[iso_features]
+        preds = iso_model.predict(X)
+        scores = iso_model.decision_function(X)
+        df["anomaly"] = preds
+        df["anomaly_score"] = scores
+        return df
+
+    # -----------------------------
     # KPI 계산
     # -----------------------------
     @reactive.calc
     def metrics():
-        return calculate_realtime_metrics(current_data(), MOLD_CODES)
+        df = current_data()
+        if not df.empty:
+            df = detect_anomalies(df)
+            abnormal_count = (df["anomaly"] == -1).sum()
+        else:
+            abnormal_count = 0
+        base_metrics = calculate_realtime_metrics(df, MOLD_CODES)
+        base_metrics["abnormal"] = abnormal_count
+        return base_metrics
 
     # KPI 출력
-    @output 
+    @output
     @render.text
     def abnormal_count(): return f"{metrics()['abnormal']}"
 
-    @output 
+    @output
     @render.text
     def good_rate(): return f"{metrics()['good_rate']:.1f}%"
 
-    @output 
+    @output
     @render.text
     def prod_count(): return f"{metrics()['prod_count']}"
 
-    @output 
+    @output
     @render.text
     def cycle_time(): return f"{metrics()['cycle_time']:.1f}s"
 
-    @output 
+    @output
     @render.text
     def oee_value(): return f"{metrics()['oee']*100:.1f}%"
 
@@ -258,11 +289,11 @@ def server_operations(input, output, session):
     @render.plot
     def live_plot(): return plot_live(current_data(), input.sensor_select())
 
-    @output 
+    @output
     @render.plot
     def oee_chart(): return plot_oee(metrics())
 
-    @output 
+    @output
     @render.plot
     def mold_ratio(): return plot_mold_ratio(metrics()["molds"])
 
@@ -294,3 +325,11 @@ def server_operations(input, output, session):
     def recent_data():
         df = current_data()
         return df.tail(10).round(2) if not df.empty else pd.DataFrame({"상태": ["데이터 없음"]})
+
+    @output
+    @render.table
+    def recent_abnormal():
+        df = current_data()
+        if df.empty or "anomaly" not in df.columns:
+            return pd.DataFrame({"상태": ["데이터 없음"]})
+        return df[df["anomaly"] == -1].tail(5).round(2)

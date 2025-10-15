@@ -6,6 +6,7 @@ import joblib
 import shap
 from matplotlib import font_manager as fm
 import os
+import json
 
 from models.FinalModel.smote_sampler import MajorityVoteSMOTENC
 
@@ -187,3 +188,17 @@ name_map_kor = {
     "month": "월",
     "weekday": "요일"
 }
+
+# Isolation Forest 모델 로드
+iso_model_path = models_dir / "isolation forest" / "saved_models(IF)" /"isoforest_20251015_155900.pkl"
+iso_meta_path = models_dir / "isolation forest" / "saved_models(IF)" /"isoforest_20251015_150622_meta.json"
+
+try:
+    iso_model = joblib.load(iso_model_path)
+    with open(iso_meta_path, "r", encoding="utf-8") as f:
+        iso_meta = json.load(f)
+    iso_features = iso_meta["features"]
+    print(f"✅ IsolationForest 모델 로드 완료: {iso_model_path.name}")
+except Exception as e:
+    iso_model, iso_meta, iso_features = None, None, []
+    print(f"⚠️ IsolationForest 모델 로드 실패: {e}")
