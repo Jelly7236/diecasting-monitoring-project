@@ -7,6 +7,7 @@ import shap
 from matplotlib import font_manager as fm
 import os
 import json
+import sys
 
 from models.FinalModel.smote_sampler import MajorityVoteSMOTENC
 
@@ -189,16 +190,56 @@ name_map_kor = {
     "weekday": "요일"
 }
 
+mold_list = ["8412", "8573", "8600", "8722", "8917"]
+
 # Isolation Forest 모델 로드
-iso_model_path = models_dir / "isolation forest" / "saved_models(IF)" /"isoforest_20251015_155900.pkl"
-iso_meta_path = models_dir / "isolation forest" / "saved_models(IF)" /"isoforest_20251015_150622_meta.json"
+iso_dir = models_dir / "isolation forest" / "saved_models(IF)"
+iso_meta_path = models_dir / "isolation forest" /"saved_models(IF)" / "isoforest_20251015_150622_meta.json"
+
+iso_models = {}
+
+for mold in mold_list:
+    model_path = iso_dir / f"isolation_forest_{mold}.pkl"
+    try:
+        iso_models[mold] = joblib.load(model_path)
+        print(f"✅ IsolationForest 모델 로드 완료: {model_path.name}")
+    except Exception as e:
+        print(f"⚠️ 모델 로드 실패 ({mold}): {e}")
 
 try:
-    iso_model = joblib.load(iso_model_path)
     with open(iso_meta_path, "r", encoding="utf-8") as f:
         iso_meta = json.load(f)
-    iso_features = iso_meta["features"]
-    print(f"✅ IsolationForest 모델 로드 완료: {iso_model_path.name}")
+    iso_features = iso_meta.get("features", [])
+    print(f"✅ IsolationForest 메타 정보 로드 완료: {iso_meta_path.name}")
 except Exception as e:
-    iso_model, iso_meta, iso_features = None, None, []
-    print(f"⚠️ IsolationForest 모델 로드 실패: {e}")
+    iso_meta, iso_features = None, []
+    print(f"⚠️ IsolationForest 메타 로드 실패: {e}")
+
+print(f"\n총 로드된 모델 수: {len(iso_models)}개")
+print(f"사용 가능한 피처 수: {len(iso_features)}개 → {iso_features if iso_features else '메타 없음'}")
+
+# RandomForestTimeSeries 모델 로드
+rft_dir = models_dir / "RandomForestTimeSeries"
+
+rft_models = {}
+
+# ✅ scikit-learn 내부 클래스 호환 패치
+import sklearn.compose._column_transformer as ct
+sys.modules["__main__"].MajorityVoteSMOTENC = MajorityVoteSMOTENC
+
+if not hasattr(ct, "_RemainderColsList"):
+    class _RemainderColsList(list):
+        """Dummy placeholder for sklearn 1.6.x compatibility"""
+        pass
+    ct._RemainderColsList = _RemainderColsList
+    print("✅ sklearn.compose._column_transformer._RemainderColsList 더미 클래스 등록 완료")
+    
+for mold in mold_list:
+    model_path = rft_dir / f"model_{mold}.pkl"
+    try:
+        rft_models[mold] = joblib.load(model_path)
+        print(f"✅ RandomForestTimeSeries 모델 로드 완료: {model_path.name}")
+    except Exception as e:
+        print(f"⚠️ 모델 로드 실패 ({mold}): {e}")
+
+print(f"\n총 로드된 모델 수: {len(rft_models)}개")
