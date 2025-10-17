@@ -1,166 +1,421 @@
+# modules/page_control.py
 from shiny import ui, render, reactive
-import plotly.graph_objs as go
 import pandas as pd
 import numpy as np
 
-# -----------------------------
-# UI
-# -----------------------------
+from shared import streaming_df  # 실시간 DF
+from utils.control_config import SPEC_LIMITS, PROCESS_GROUPS, FEATURES_ALL
+from utils.control_stats import (
+    check_nelson_rules, calculate_hotelling_t2, phaseII_ucl_t2,
+    calculate_cp_cpk, to_datetime_safe
+)
+from viz.control_plots import build_univar_figure, build_t2_figure, build_cap_hist
+
+# ==================== UI ====================
 def ui_control():
     return ui.page_fluid(
-        ui.h3("공정 관리 상태 분석"),
-        ui.p("단변량 및 다변량 관리도를 통해 공정 이상 여부를 모니터링하고, 발생 로그 및 공정 능력(Cp, Cpk)을 확인합니다."),
-        ui.hr(),
+        # 외부 CSS
+        ui.tags.link(rel="stylesheet", href="css/control.css"),
 
-        # -----------------------------
-        # 단변량 관리도
-        # -----------------------------
-        ui.card(
-            ui.card_header("📈 단변량 관리도"),
-            ui.layout_columns(
-                ui.input_select(
-                    "uni_var",
-                    "변수 선택",
-                    choices=["주조압력", "용탕온도", "형체력", "하형온도1", "주조속도"],
-                    selected="주조압력"
-                ),
-                col_widths=[12]
-            ),
-            ui.output_plot("univariate_chart", height="350px"),
-            ui.output_table("univariate_log")
-        ),
-
-        ui.hr(),
-
-        # -----------------------------
-        # 다변량 관리도 (공정 단계별 카드)
-        # -----------------------------
-        ui.h4("공정 단계별 다변량 관리도"),
+        # 컨트롤 바
         ui.div(
-            *[
+            ui.div(
                 ui.card(
-                    ui.card_header(f"📊 {process}"),
-                    ui.output_plot(f"multi_{i}_chart", height="300px"),
-                    ui.output_table(f"multi_{i}_log")
-                )
-                for i, process in enumerate([
-                    "용탕 준비 및 가열",
-                    "반고체 슬러리 제조",
-                    "사출 & 금형 충전",
-                    "응고"
-                ], start=1)
-            ],
-            style="display:grid;grid-template-columns:repeat(2,1fr);gap:1rem;"
-        ),
-
-        ui.hr(),
-
-        # -----------------------------
-        # Cp / Cpk 분석 섹션
-        # -----------------------------
-        ui.h4("공정능력 분석 (Cp / Cpk)"),
-        ui.p("공정이 규격 한계 내에서 얼마나 안정적으로 운영되는지를 Cp, Cpk로 평가합니다."),
-        ui.layout_columns(
-            ui.card(
-                ui.card_header("변수별 Cp / Cpk 분석"),
-                ui.input_select(
-                    "cp_var",
-                    "분석 변수 선택",
-                    choices=["주조압력", "용탕온도", "형체력", "하형온도1", "주조속도"],
-                    selected="주조압력"
+                    ui.card_header("⚙️ 컨트롤"),
+                    ui.div(
+                        ui.layout_columns(
+                            ui.input_select(
+                                "var_uni","단변량 변수",
+                                choices={
+                                    "molten_temp":"용탕온도",
+                                    "cast_pressure":"주조압력",
+                                    "upper_mold_temp1":"상형온도1",
+                                    "sleeve_temperature":"슬리브온도",
+                                    "Coolant_temperature":"냉각수온도",
+                                }, selected="molten_temp"
+                            ),
+                            ui.output_ui("mold_select"),
+                            ui.input_numeric("win","윈도우(n)",200,min=50,max=5000,step=50),
+                            ui.input_switch("phase_guard","Phase I(정상만) 기준선",True),
+                            col_widths=[4,4,2,2]
+                        ),
+                        class_="p-2"
+                    ),
                 ),
-                ui.output_plot("cpk_plot", height="320px"),
-                ui.output_table("cpk_table")
+                class_="section"
             ),
-            col_widths=[12]
+            class_="container stickybar"
         ),
 
-        style="max-width:1300px;margin:0 auto;"
+        # KPI
+        ui.div(
+            ui.card(
+                ui.card_header("📌 KPI (선택 변수 한눈에)"),
+                ui.output_ui("kpi_bar")
+            ),
+            class_="container section"
+        ),
+
+        # 섹션 1: 단변량
+        ui.div(
+            ui.card(
+                ui.card_header("📈 단변량 관리도 + 넬슨 룰"),
+                ui.layout_columns(
+                    ui.div(
+                        ui.output_ui("univar_plot"),
+                        ui.div(ui.output_ui("nelson_badges"), class_="pt-2"),
+                        class_="p-3"
+                    ),
+                    ui.div(
+                        ui.h5("🚨 이상 패턴 로그", class_="mb-2"),
+                        ui.div(ui.output_table("nelson_table"), class_="scroll-table"),
+                        class_="p-3"
+                    ),
+                    col_widths=[8,4]
+                )
+            ),
+            class_="container section"
+        ),
+
+        # 섹션 2: 다변량
+        ui.div(
+            ui.card(
+                ui.card_header("🔬 다변량 관리도 (Hotelling T²)"),
+                ui.layout_columns(
+                    ui.div(
+                        ui.input_select("t2_group","변수 그룹",
+                            choices={k:k for k in PROCESS_GROUPS.keys()},
+                            selected=list(PROCESS_GROUPS.keys())[0]
+                        ),
+                        ui.output_ui("t2_plot"),
+                        class_="p-3"
+                    ),
+                    ui.div(
+                        ui.h5("📄 T² 초과 로그", class_="mb-2"),
+                        ui.div(ui.output_table("t2_table"), class_="scroll-table"),
+                        class_="p-3"
+                    ),
+                    col_widths=[8,4]
+                )
+            ),
+            class_="container section"
+        ),
+
+        # 섹션 3: Cp/Cpk
+        ui.div(
+            ui.card(
+                ui.card_header("📐 공정능력 (Cp / Cpk)"),
+                ui.layout_columns(
+                    ui.div(
+                        ui.input_select(
+                            "cap_var","분석 변수",
+                            choices={
+                                "molten_temp":"용탕온도",
+                                "cast_pressure":"주조압력",
+                                "upper_mold_temp1":"상형온도1",
+                                "sleeve_temperature":"슬리브온도",
+                                "Coolant_temperature":"냉각수온도",
+                            }, selected="cast_pressure"
+                        ),
+                        ui.output_ui("cap_plot"),
+                        class_="p-3"
+                    ),
+                    ui.div(
+                        ui.h5("📄 Cp/Cpk 표", class_="mb-2"),
+                        ui.output_table("cap_table"),
+                        class_="p-3"
+                    ),
+                    col_widths=[8,4]
+                )
+            ),
+            class_="container section"
+        ),
+
+        # 섹션 4: 타임라인
+        ui.div(
+            ui.card(
+                ui.card_header("🕒 최근 이상 타임라인 (단변량 룰/다변량 T² 합본)"),
+                ui.div(ui.output_table("timeline_table"), class_="scroll-table", style="max-height:340px")
+            ),
+            class_="container section"
+        ),
     )
 
-
-# -----------------------------
-# SERVER
-# -----------------------------
+# ==================== SERVER ====================
 def server_control(input, output, session):
-    np.random.seed(0)
-    n = 50
-    x = np.arange(1, n + 1)
-
-    # -----------------------------
-    # 1. 단변량 관리도
-    # -----------------------------
+    # 동적 mold 선택
     @output
-    @render.plot
-    def univariate_chart():
-        var = input.uni_var()
-        mean_val = np.random.uniform(80, 120)
-        data = np.random.normal(mean_val, 5, size=n)
-        ucl, lcl = mean_val + 10, mean_val - 10
+    @render.ui
+    def mold_select():
+        df = streaming_df; choices = ["(전체)"]
+        if "mold_code" in df:
+            choices += [str(m) for m in sorted(df["mold_code"].dropna().unique())]
+        return ui.input_select("mold","몰드",choices=choices,selected="(전체)")
 
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=x, y=data, mode="lines+markers", name=var))
-        fig.add_hline(y=ucl, line_dash="dash", line_color="red", name="UCL")
-        fig.add_hline(y=lcl, line_dash="dash", line_color="red", name="LCL")
-        fig.update_layout(
-            title=f"{var} 관리도",
-            xaxis_title="샘플 번호",
-            yaxis_title="값",
-            template="plotly_white"
+    # 공통 뷰
+    @reactive.Calc
+    def df_view():
+        df = streaming_df.copy()
+        if "id" in df: df = df.sort_values("id")
+        df = df.tail(int(input.win()))
+        if "mold_code" in df and input.mold() not in (None,"","(전체)"):
+            try:
+                sel = int(input.mold()); df = df[df["mold_code"] == sel]
+            except Exception:
+                df = df[df["mold_code"].astype(str) == str(input.mold())]
+        dt = to_datetime_safe(df)
+        df["__dt__"] = dt if dt is not None else pd.RangeIndex(len(df)).astype(float)
+        return df.reset_index(drop=True)
+
+    # 기준선 (Phase I: passorfail==0)
+    @reactive.Calc
+    def df_baseline():
+        df = streaming_df.copy()
+        if "id" in df: df = df.sort_values("id")
+        if "mold_code" in df and input.mold() not in (None,"","(전체)"):
+            try:
+                sel = int(input.mold()); df = df[df["mold_code"] == sel]
+            except Exception:
+                df = df[df["mold_code"].astype(str) == str(input.mold())]
+        mask = (df["passorfail"] == 0) if "passorfail" in df else np.ones(len(df), dtype=bool)
+        base = df.loc[mask, FEATURES_ALL].dropna()
+        if len(base) < 50: return None
+        return base
+
+    # KPI
+    @output
+    @render.ui
+    def kpi_bar():
+        df = df_view()
+        base = df_baseline() if input.phase_guard() else df_view()[FEATURES_ALL].dropna()
+        var = input.var_uni()
+        series = df[var].dropna()
+        if len(series) < 5:
+            return ui.div(ui.p("표본이 부족합니다.", class_="muted"))
+
+        if base is None or len(base) < 5:
+            mu0, sd0 = series.mean(), series.std(ddof=1)
+        else:
+            mu0, sd0 = base[var].mean(), base[var].std(ddof=1)
+        ucl, lcl = mu0 + 3*sd0, mu0 - 3*sd0
+
+        if var in SPEC_LIMITS:
+            cp, cpk, *_ = calculate_cp_cpk(series, SPEC_LIMITS[var]["usl"], SPEC_LIMITS[var]["lsl"])
+            cp_text = f"{cp:.2f} / {cpk:.2f}"
+        else:
+            cp_text = "—"
+
+        def kcard(title, value, sub=""):
+            return ui.div(
+                ui.div(
+                    ui.div(title, class_="title"),
+                    ui.div(value, class_="value"),
+                    ui.div(sub, class_="sub"),
+                    class_="p-3"
+                ),
+                class_="kcard"
+            )
+
+        return ui.div(
+            kcard("변수", f"{var}"),
+            kcard("평균(μ)", f"{series.mean():.2f}", f"기준선 μ={mu0:.2f}"),
+            kcard("표준편차(σ)", f"{series.std(ddof=1):.2f}", f"기준선 σ={sd0:.2f}"),
+            kcard("UCL/LCL(±3σ)", f"{ucl:.2f} / {lcl:.2f}"),
+            kcard("Cp / Cpk", cp_text),
+            class_="kpi-row"
         )
-        return fig
+
+    # 단변량
+    @output
+    @render.ui
+    def univar_plot():
+        df = df_view()
+        base = df_baseline() if input.phase_guard() else df_view()[FEATURES_ALL].dropna()
+        var = input.var_uni()
+        x = df[var].dropna().to_numpy()
+        if len(x) < 10:
+            return ui.p("표본이 부족합니다.", class_="muted")
+        mu = (base[var].mean() if base is not None and len(base)>5 else np.mean(x))
+        sd = (base[var].std(ddof=1) if base is not None and len(base)>5 else np.std(x, ddof=1))
+        vio = check_nelson_rules(x, mu, mu+3*sd, mu-3*sd, sd)
+        fig = build_univar_figure(x, mu, sd, vio, title=f"{var} 관리도 (n={len(x)})")
+        return ui.HTML(fig.to_html(include_plotlyjs='cdn', div_id=f"uni_{var}"))
+
+    @output
+    @render.ui
+    def nelson_badges():
+        df = df_view()
+        base = df_baseline() if input.phase_guard() else df_view()[FEATURES_ALL].dropna()
+        var = input.var_uni()
+        x = df[var].dropna().to_numpy()
+        if len(x) < 10: return ui.div()
+        mu = (base[var].mean() if base is not None and len(base)>5 else np.mean(x))
+        sd = (base[var].std(ddof=1) if base is not None and len(base)>5 else np.std(x, ddof=1))
+        vio = check_nelson_rules(x, mu, mu+3*sd, mu-3*sd, sd)
+        counts = {"Rule 1":0,"Rule 2":0,"Rule 3":0,"Rule 5":0}
+        for _, r, _, _ in vio:
+            if r in counts: counts[r]+=1
+        return ui.div(
+            ui.span(f"Rule1 {counts['Rule 1']}", class_="badge b-red",   style="margin-right:.5rem"),
+            ui.span(f"Rule2 {counts['Rule 2']}", class_="badge b-amber", style="margin-right:.5rem"),
+            ui.span(f"Rule3 {counts['Rule 3']}", class_="badge b-blue",  style="margin-right:.5rem"),
+            ui.span(f"Rule5 {counts['Rule 5']}", class_="badge b-gray"),
+        )
 
     @output
     @render.table
-    def univariate_log():
-        var = input.uni_var()
-        df = pd.DataFrame({
-            "샘플번호": np.arange(1, 11),
-            "변수명": [var] * 10,
-            "이상유형": np.random.choice(
-                ["UCL 초과", "LCL 미만", "급격한 변동", "공정불안정"], size=10
-            ),
-            "값": np.round(np.random.uniform(80, 120, size=10), 2)
+    def nelson_table():
+        df = df_view()
+        base = df_baseline() if input.phase_guard() else df_view()[FEATURES_ALL].dropna()
+        var = input.var_uni()
+        x = df[var].dropna().to_numpy()
+        if len(x) < 10: return pd.DataFrame({"상태":["표본 부족"]})
+        mu = (base[var].mean() if base is not None and len(base)>5 else np.mean(x))
+        sd = (base[var].std(ddof=1) if base is not None and len(base)>5 else np.std(x, ddof=1))
+        vio = check_nelson_rules(x, mu, mu+3*sd, mu-3*sd, sd)
+        if not vio: return pd.DataFrame({"상태":["✅ 이상 패턴 없음"]})
+        out = pd.DataFrame(vio, columns=["샘플","룰","설명","값"])
+        out["값"] = out["값"].round(3)
+        return out.tail(200)
+
+    # 다변량
+    @output
+    @render.ui
+    def t2_plot():
+        df = df_view()
+        base = df_baseline() if input.phase_guard() else df_view()[FEATURES_ALL].dropna()
+        group_key = input.t2_group()
+        var_list = PROCESS_GROUPS[group_key]
+        X = df[var_list].dropna().to_numpy()
+        p = len(var_list)
+        if X.shape[0] < max(30, p+5): return ui.p("표본이 부족합니다.", class_="muted")
+
+        base_df = base[var_list].dropna() if (base is not None and set(var_list).issubset(base.columns)) else df[var_list].dropna()
+        mu = base_df.mean().to_numpy()
+        cov = np.cov(base_df.to_numpy().T)
+        try:
+            inv_cov = np.linalg.inv(cov)
+        except np.linalg.LinAlgError:
+            inv_cov = np.linalg.pinv(cov)
+
+        t2 = calculate_hotelling_t2(X, mu, inv_cov)
+        n = X.shape[0]
+        ucl = phaseII_ucl_t2(n, p, alpha=0.01)
+        viol_idx = np.where(t2 > ucl)[0]
+        fig = build_t2_figure(t2, ucl, title=f"{group_key} · 변수: {', '.join(var_list)}", viol_idx=viol_idx)
+        return ui.HTML(fig.to_html(include_plotlyjs='cdn', div_id=f"t2_{group_key}"))
+
+    @output
+    @render.table
+    def t2_table():
+        df = df_view()
+        base = df_baseline() if input.phase_guard() else df_view()[FEATURES_ALL].dropna()
+        group_key = input.t2_group()
+        var_list = PROCESS_GROUPS[group_key]
+        X = df[var_list].dropna().to_numpy()
+        p = len(var_list)
+        if X.shape[0] < max(30, p+5): return pd.DataFrame({"상태":["표본 부족"]})
+
+        base_df = base[var_list].dropna() if (base is not None and set(var_list).issubset(base.columns)) else df[var_list].dropna()
+        mu = base_df.mean().to_numpy()
+        cov = np.cov(base_df.to_numpy().T)
+        try:
+            inv_cov = np.linalg.inv(cov)
+        except np.linalg.LinAlgError:
+            inv_cov = np.linalg.pinv(cov)
+
+        t2 = calculate_hotelling_t2(X, mu, inv_cov)
+        n = X.shape[0]
+        ucl = phaseII_ucl_t2(n, p, alpha=0.01)
+        viol = np.where(t2 > ucl)[0]
+
+        if len(viol) == 0:
+            return pd.DataFrame({"상태":["✅ 관리 상태 양호"]})
+        log = pd.DataFrame({
+            "샘플": viol+1,
+            "T²": t2[viol].round(3),
+            "UCL": np.round(ucl,3),
+            "변수": [", ".join(var_list)]*len(viol),
+            "유형": ["T² 초과"]*len(viol),
         })
-        return df
+        return log.tail(200)
 
-    # -----------------------------
-    # 2. 다변량 관리도 (공정별 카드)
-    # -----------------------------
-    process_groups = {
-        1: ["용탕온도", "용탕부피", "슬리브온도"],
-        2: ["저속속도", "고속속도", "형체력"],
-        3: ["주조압력", "주조속도", "비스킷두께"],
-        4: ["상형온도1", "하형온도1", "냉각수온도"]
-    }
+    # Cp/Cpk
+    @output
+    @render.ui
+    def cap_plot():
+        df = df_view()
+        var = input.cap_var()
+        x = df[var].dropna().to_numpy()
+        if len(x) < 20 or var not in SPEC_LIMITS:
+            return ui.p("표본이 부족거나 규격 한계 미정의.", class_="muted")
+        usl, lsl = SPEC_LIMITS[var]["usl"], SPEC_LIMITS[var]["lsl"]
+        cp, cpk, cpu, cpl, mean_s, std_s = calculate_cp_cpk(x, usl, lsl)
+        fig = build_cap_hist(x, usl, lsl, mean_s, cp, cpk, title=f"{var} Cp/Cpk")
+        return ui.HTML(fig.to_html(include_plotlyjs='cdn', div_id=f"cap_{var}"))
 
-    for i, vars_ in process_groups.items():
-        @output(id=f"multi_{i}_chart")
-        @render.plot
-        def multivariate_chart(i=i, vars_=vars_):
-            # Hotelling T² 샘플 생성
-            t2_values = np.random.chisquare(df=len(vars_), size=n)
-            ucl = np.percentile(t2_values, 95)
+    @output
+    @render.table
+    def cap_table():
+        df = df_view()
+        var = input.cap_var()
+        x = df[var].dropna().to_numpy()
+        if len(x) < 20 or var not in SPEC_LIMITS:
+            return pd.DataFrame({"상태":["표본 부족 또는 규격 한계 미정의"]})
+        usl, lsl = SPEC_LIMITS[var]["usl"], SPEC_LIMITS[var]["lsl"]
+        cp, cpk, cpu, cpl, mean_s, std_s = calculate_cp_cpk(x, usl, lsl)
+        status = "✅ 우수(≥1.33)" if cpk >= 1.33 else ("⚠️ 양호(≥1.00)" if cpk >= 1.00 else "❌ 개선 필요")
+        return pd.DataFrame({
+            "지표":["USL","LSL","평균(μ)","표준편차(σ)","Cp","Cpu","Cpl","Cpk","평가"],
+            "값":[usl, lsl, round(mean_s,3), round(std_s,3),
+                 round(cp,3), round(cpu,3), round(cpl,3), round(cpk,3), status]
+        })
 
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=x, y=t2_values, mode="lines+markers", name=f"T² ({i})"))
-            fig.add_hline(y=ucl, line_dash="dash", line_color="red", name="UCL")
-            fig.update_layout(
-                title=f"{', '.join(vars_)} (공정 {i}) Hotelling T² 관리도",
-                xaxis_title="샘플 번호",
-                yaxis_title="T² 값",
-                template="plotly_white"
-            )
-            return fig
+    # 타임라인
+    @output
+    @render.table
+    def timeline_table():
+        df = df_view()
+        base = df_baseline() if input.phase_guard() else df_view()[FEATURES_ALL].dropna()
+        out_rows = []
+        dtcol = "__dt__" if "__dt__" in df.columns else None
 
-        @output(id=f"multi_{i}_log")
-        @render.table
-        def multivariate_log(i=i, vars_=vars_):
-            df = pd.DataFrame({
-                "샘플번호": np.random.randint(1, n, 5),
-                "공정단계": [f"공정 {i}"] * 5,
-                "관련변수": [", ".join(np.random.choice(vars_, size=2, replace=False)) for _ in range(5)],
-                "이상유형": np.random.choice(["T² 초과", "급격한 변동", "이상치"], size=5),
-                "T²값": np.round(np.random.uniform(5, 15, size=5), 2)
-            })
-            return df
+        # 단변량
+        for var in FEATURES_ALL:
+            s = df[var].dropna()
+            if len(s) < 10: continue
+            if base is None or var not in base.columns or len(base) < 5:
+                mu0, sd0 = s.mean(), s.std(ddof=1)
+            else:
+                mu0, sd0 = base[var].mean(), base[var].std(ddof=1)
+            vio = check_nelson_rules(s.to_numpy(), mu0, mu0+3*sd0, mu0-3*sd0, sd0)
+            for (idx, r, desc, val) in vio[-50:]:
+                ts = df.iloc[s.index.min() + idx - 1][dtcol] if dtcol else np.nan
+                out_rows.append({"시각": ts, "유형":"단변량", "세부": r, "설명": f"{var}: {desc}", "값": round(val,3)})
+
+        # 다변량
+        for key, vars_ in PROCESS_GROUPS.items():
+            sub = df[vars_].dropna()
+            p = len(vars_)
+            if sub.shape[0] < max(30, p+5): continue
+            base_df = base[vars_].dropna() if (base is not None and set(vars_).issubset(base.columns)) else sub
+            mu = base_df.mean().to_numpy()
+            cov = np.cov(base_df.to_numpy().T)
+            try:
+                inv_cov = np.linalg.inv(cov)
+            except np.linalg.LinAlgError:
+                inv_cov = np.linalg.pinv(cov)
+            t2 = calculate_hotelling_t2(sub.to_numpy(), mu, inv_cov)
+            ucl = phaseII_ucl_t2(len(sub), p, 0.01)
+            viol_idx = np.where(t2 > ucl)[0][-50:]
+            for idx in viol_idx:
+                orig_idx = sub.index[idx]
+                ts = df.loc[orig_idx, dtcol] if dtcol else np.nan
+                out_rows.append({"시각": ts, "유형":"다변량", "세부":"T²", "설명": f"{key} 초과", "값": round(t2[idx],3)})
+
+        if not out_rows:
+            return pd.DataFrame({"상태":["최근 이상 없음"]})
+        timeline = pd.DataFrame(out_rows)
+        if "시각" in timeline.columns and timeline["시각"].notna().any():
+            timeline = timeline.sort_values("시각")
+        return timeline.tail(300)

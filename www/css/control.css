@@ -1,0 +1,107 @@
+/* www/css/control.css */
+* {
+  font-family: "Noto Sans KR", sans-serif;
+}
+body {
+  background: #f6f7fb;
+}
+.container {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 0 12px;
+}
+.card {
+  border: 1px solid #e5e7eb;
+  border-radius: 14px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
+  background: #fff;
+}
+.card-header {
+  background: #fafbfc;
+  border-bottom: 1px solid #eef0f3;
+  padding: 0.9rem 1.1rem;
+  font-weight: 800;
+  color: #111827;
+}
+.section {
+  margin-bottom: 18px;
+}
+.stickybar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: rgba(246, 247, 251, 0.92);
+  backdrop-filter: saturate(180%) blur(6px);
+  padding: 0.6rem 0 0.8rem;
+  border-bottom: 1px solid #eceff3;
+}
+.kpi-row {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(180px, 1fr);
+  gap: 12px;
+  overflow-x: auto;
+  padding: 12px;
+  align-items: stretch;
+}
+.kcard {
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #fff;
+}
+.kcard .title {
+  color: #6b7280;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+.kcard .value {
+  font-size: 1.35rem;
+  font-weight: 900;
+  color: #111827;
+}
+.kcard .sub {
+  color: #6b7280;
+  font-size: 0.8rem;
+}
+.muted {
+  color: #6b7280;
+}
+.badge {
+  display: inline-block;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 0.75rem;
+}
+.b-red {
+  background: #fee2e2;
+  color: #991b1b;
+}
+.b-amber {
+  background: #fef3c7;
+  color: #92400e;
+}
+.b-blue {
+  background: #dbeafe;
+  color: #1e40af;
+}
+.b-gray {
+  background: #e5e7eb;
+  color: #374151;
+}
+.scroll-table {
+  max-height: 280px;
+  overflow: auto;
+  border: 1px solid #eef0f3;
+  border-radius: 8px;
+  background: #fff;
+}
+.scroll-table table {
+  width: 100%;
+}
+.scroll-table thead th {
+  position: sticky;
+  top: 0;
+  background: #fafbfc;
+  z-index: 1;
+}
