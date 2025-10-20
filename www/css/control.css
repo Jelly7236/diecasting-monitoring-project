@@ -1,107 +1,270 @@
-/* www/css/control.css */
+/* ================================
+   🌟 기본 세팅
+================================ */
 * {
   font-family: "Noto Sans KR", sans-serif;
+  box-sizing: border-box;
 }
 body {
-  background: #f6f7fb;
+  background-color: #f7f9fb;
+  color: #1f2937;
 }
-.container {
-  max-width: 1400px;
-  margin: 0 auto;
-  padding: 0 12px;
-}
-.card {
-  border: 1px solid #e5e7eb;
-  border-radius: 14px;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
-  background: #fff;
+h3,
+h4,
+h5 {
+  font-weight: 700;
+  color: #1e293b;
 }
 .card-header {
-  background: #fafbfc;
-  border-bottom: 1px solid #eef0f3;
-  padding: 0.9rem 1.1rem;
-  font-weight: 800;
-  color: #111827;
+  background-color: #f9fafb;
+  border-bottom: 1px solid #e5e7eb;
+  color: #374151;
+  font-weight: 600;
+  padding: 0.75rem 1rem;
+  font-size: 0.95rem;
 }
+
+/* ================================
+   ⚙️ 상단 컨트롤 영역
+================================ */
 .section {
-  margin-bottom: 18px;
+  margin-bottom: 1.5rem;
+}
+.container {
+  max-width: 1600px;
+  margin: 0 auto;
 }
 .stickybar {
   position: sticky;
   top: 0;
-  z-index: 10;
-  background: rgba(246, 247, 251, 0.92);
-  backdrop-filter: saturate(180%) blur(6px);
-  padding: 0.6rem 0 0.8rem;
-  border-bottom: 1px solid #eceff3;
+  background: rgba(255, 255, 255, 0.9);
+  z-index: 100;
+  backdrop-filter: blur(5px);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
 }
+
+/* ================================
+   📊 KPI 및 카드 공통
+================================ */
 .kpi-row {
-  display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(180px, 1fr);
-  gap: 12px;
-  overflow-x: auto;
-  padding: 12px;
-  align-items: stretch;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  justify-content: space-between;
 }
 .kcard {
+  flex: 1;
+  min-width: 150px;
+  background: white;
   border: 1px solid #e5e7eb;
-  border-radius: 12px;
-  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  transition: all 0.3s ease;
+  cursor: default;
+}
+.kcard:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 4px 8px rgba(59, 130, 246, 0.2);
 }
 .kcard .title {
+  font-size: 0.8rem;
   color: #6b7280;
-  font-size: 0.85rem;
-  font-weight: 700;
+  margin-bottom: 0.25rem;
 }
 .kcard .value {
-  font-size: 1.35rem;
-  font-weight: 900;
-  color: #111827;
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: #1f2937;
 }
 .kcard .sub {
+  font-size: 0.75rem;
+  color: #9ca3af;
+}
+
+/* ================================
+   📈 단변량 카드 그리드
+================================ */
+.var-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.var-card {
+  background: #ffffff;
+  border: 1.5px solid #d0e1fd;
+  border-radius: 10px;
+  padding: 1rem;
+  height: 180px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  transition: all 0.3s ease;
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+.var-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 4px 8px rgba(59, 130, 246, 0.2);
+}
+.var-card.alert {
+  border-color: #ef4444;
+  background-color: #fef2f2;
+}
+.var-card.warning {
+  border-color: #f59e0b;
+  background-color: #fffbeb;
+}
+
+.var-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.var-name {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #111827;
+}
+.var-status {
+  font-size: 0.75rem;
+  padding: 0.25rem 0.6rem;
+  border-radius: 6px;
+  color: white;
+  font-weight: 600;
+}
+.var-status.normal {
+  background-color: #10b981;
+}
+.var-status.warning {
+  background-color: #f59e0b;
+}
+.var-status.alert {
+  background-color: #ef4444;
+}
+
+.var-value {
+  text-align: center;
+  font-size: 1.8rem;
+  font-weight: 700;
+  color: #111827;
+}
+.var-value.alert {
+  color: #ef4444;
+}
+.var-value.warning {
+  color: #f59e0b;
+}
+.var-value .trend {
+  font-size: 1.1rem;
+  margin-left: 0.3rem;
   color: #6b7280;
+}
+
+.var-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  font-size: 0.7rem;
+  text-align: center;
+  color: #6b7280;
+  border-top: 1px solid #e5e7eb;
+  padding-top: 0.5rem;
+}
+.var-stats .stat-label {
+  display: block;
+  font-size: 0.65rem;
+  margin-bottom: 0.2rem;
+  color: #6b7280;
+}
+.var-stats .stat-value {
+  font-weight: 700;
+  color: #1f2937;
   font-size: 0.8rem;
 }
-.muted {
-  color: #6b7280;
+
+/* ================================
+   🕒 스크롤 테이블
+================================ */
+.scroll-table {
+  max-height: 300px;
+  overflow-y: auto;
 }
+.scroll-table::-webkit-scrollbar {
+  width: 6px;
+}
+.scroll-table::-webkit-scrollbar-thumb {
+  background-color: rgba(156, 163, 175, 0.5);
+  border-radius: 4px;
+}
+.scroll-table::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(107, 114, 128, 0.8);
+}
+
+/* ================================
+   💬 배지 (Rule Count 등)
+================================ */
 .badge {
   display: inline-block;
-  padding: 0.15rem 0.55rem;
-  border-radius: 999px;
-  font-weight: 700;
-  font-size: 0.75rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: white;
 }
 .b-red {
-  background: #fee2e2;
-  color: #991b1b;
+  background-color: #ef4444;
 }
 .b-amber {
-  background: #fef3c7;
-  color: #92400e;
+  background-color: #f59e0b;
 }
 .b-blue {
-  background: #dbeafe;
-  color: #1e40af;
+  background-color: #3b82f6;
 }
 .b-gray {
-  background: #e5e7eb;
-  color: #374151;
+  background-color: #6b7280;
 }
-.scroll-table {
-  max-height: 280px;
-  overflow: auto;
-  border: 1px solid #eef0f3;
+
+/* ================================
+   ✨ 모달 내부 디자인
+================================ */
+.modal-content {
+  border-radius: 12px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
+}
+.modal-header {
+  background-color: #f9fafb;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.modal-stats {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 1rem;
+  background: #f9fafb;
+  padding: 1rem;
   border-radius: 8px;
-  background: #fff;
+  margin: 1rem 0;
+  text-align: center;
 }
-.scroll-table table {
-  width: 100%;
+.modal-stats .stat-label {
+  font-size: 0.75rem;
+  color: #6b7280;
+  margin-bottom: 0.3rem;
 }
-.scroll-table thead th {
-  position: sticky;
-  top: 0;
-  background: #fafbfc;
-  z-index: 1;
+.modal-stats .stat-value {
+  font-size: 1.3rem;
+  font-weight: 700;
+  color: #111827;
+}
+.modal-stats .stat-value.base {
+  color: #10b981;
+}
+.modal-stats .stat-value.alert {
+  color: #ef4444;
+}
+.no-viol {
+  text-align: center;
+  color: #6b7280;
+  padding: 1rem;
 }

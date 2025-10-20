@@ -37,6 +37,3 @@ def server(input, output, session):
     page_input.page_input_server(input, output, session)
 
 app = App(app_ui, server, static_assets=www_dir)
-
-
-
