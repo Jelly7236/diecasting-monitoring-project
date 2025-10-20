@@ -1,154 +1,99 @@
-/* ================================
-   🌟 기본 세팅
-================================ */
 * {
   font-family: "Noto Sans KR", sans-serif;
-  box-sizing: border-box;
 }
 body {
-  background-color: #f7f9fb;
-  color: #1f2937;
+  background-color: #f5f7fa;
+  padding: 1rem 0;
 }
-h3,
-h4,
-h5 {
-  font-weight: 700;
-  color: #1e293b;
+
+.card {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  background: white;
+  margin-bottom: 1rem;
 }
 .card-header {
   background-color: #f9fafb;
   border-bottom: 1px solid #e5e7eb;
-  color: #374151;
+  color: #1f2937;
   font-weight: 600;
   padding: 0.75rem 1rem;
-  font-size: 0.95rem;
+  font-size: 0.9rem;
 }
 
-/* ================================
-   ⚙️ 상단 컨트롤 영역
-================================ */
-.section {
-  margin-bottom: 1.5rem;
-}
-.container {
-  max-width: 1600px;
-  margin: 0 auto;
-}
-.stickybar {
-  position: sticky;
-  top: 0;
-  background: rgba(255, 255, 255, 0.9);
-  z-index: 100;
-  backdrop-filter: blur(5px);
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
-}
-
-/* ================================
-   📊 KPI 및 카드 공통
-================================ */
-.kpi-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 1rem;
-  justify-content: space-between;
-}
-.kcard {
-  flex: 1;
-  min-width: 150px;
-  background: white;
-  border: 1px solid #e5e7eb;
-  border-radius: 10px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
-  transition: all 0.3s ease;
-  cursor: default;
-}
-.kcard:hover {
-  transform: translateY(-3px);
-  box-shadow: 0 4px 8px rgba(59, 130, 246, 0.2);
-}
-.kcard .title {
-  font-size: 0.8rem;
-  color: #6b7280;
-  margin-bottom: 0.25rem;
-}
-.kcard .value {
-  font-size: 1.4rem;
-  font-weight: 700;
-  color: #1f2937;
-}
-.kcard .sub {
-  font-size: 0.75rem;
-  color: #9ca3af;
-}
-
-/* ================================
-   📈 단변량 카드 그리드
-================================ */
+/* 변수 카드 그리드 */
 .var-cards-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  grid-template-columns: repeat(3, 1fr);
   gap: 1rem;
-  margin-top: 1rem;
+  margin: 1rem 0;
 }
 
 .var-card {
-  background: #ffffff;
-  border: 1.5px solid #d0e1fd;
-  border-radius: 10px;
+  background: white;
+  border: 2px solid #e5e7eb;
+  border-radius: 8px;
   padding: 1rem;
+  cursor: pointer;
+  transition: all 0.3s ease;
   height: 180px;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  transition: all 0.3s ease;
-  cursor: pointer;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 }
+
 .var-card:hover {
   transform: translateY(-3px);
-  box-shadow: 0 4px 8px rgba(59, 130, 246, 0.2);
+  border-color: #3b82f6;
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.2);
 }
+
 .var-card.alert {
   border-color: #ef4444;
-  background-color: #fef2f2;
+  background: #fef2f2;
 }
+
 .var-card.warning {
   border-color: #f59e0b;
-  background-color: #fffbeb;
+  background: #fffbeb;
 }
 
 .var-card-header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
+  margin-bottom: 0.75rem;
 }
+
 .var-name {
   font-size: 0.9rem;
   font-weight: 600;
-  color: #111827;
+  color: #1f2937;
 }
+
 .var-status {
-  font-size: 0.75rem;
-  padding: 0.25rem 0.6rem;
-  border-radius: 6px;
+  font-size: 0.7rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  background: #10b981;
   color: white;
   font-weight: 600;
 }
-.var-status.normal {
-  background-color: #10b981;
+
+.var-status.alert {
+  background: #ef4444;
 }
 .var-status.warning {
-  background-color: #f59e0b;
-}
-.var-status.alert {
-  background-color: #ef4444;
+  background: #f59e0b;
 }
 
 .var-value {
-  text-align: center;
-  font-size: 1.8rem;
+  font-size: 2rem;
   font-weight: 700;
-  color: #111827;
+  color: #1f2937;
+  text-align: center;
+  margin: 0.5rem 0;
 }
 .var-value.alert {
   color: #ef4444;
@@ -156,115 +101,69 @@ h5 {
 .var-value.warning {
   color: #f59e0b;
 }
-.var-value .trend {
-  font-size: 1.1rem;
-  margin-left: 0.3rem;
-  color: #6b7280;
-}
 
 .var-stats {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
+  gap: 0.5rem;
   font-size: 0.7rem;
-  text-align: center;
   color: #6b7280;
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
   border-top: 1px solid #e5e7eb;
-  padding-top: 0.5rem;
-}
-.var-stats .stat-label {
-  display: block;
-  font-size: 0.65rem;
-  margin-bottom: 0.2rem;
-  color: #6b7280;
-}
-.var-stats .stat-value {
-  font-weight: 700;
-  color: #1f2937;
-  font-size: 0.8rem;
 }
 
-/* ================================
-   🕒 스크롤 테이블
-================================ */
+.stat-item {
+  text-align: center;
+}
+.stat-label {
+  display: block;
+  margin-bottom: 0.2rem;
+  font-size: 0.65rem;
+}
+.stat-value {
+  font-weight: 600;
+  color: #1f2937;
+  font-size: 0.75rem;
+}
+
+.trend-indicator {
+  font-size: 1.2rem;
+  display: inline-block;
+  margin-left: 0.3rem;
+}
+.trend-up {
+  color: #ef4444;
+}
+.trend-down {
+  color: #10b981;
+}
+.trend-stable {
+  color: #6b7280;
+}
+
 .scroll-table {
-  max-height: 300px;
+  max-height: 250px;
   overflow-y: auto;
 }
-.scroll-table::-webkit-scrollbar {
-  width: 6px;
+h3 {
+  color: #1f2937;
+  font-weight: 700;
+  margin-bottom: 1rem;
+  font-size: 1.5rem;
 }
-.scroll-table::-webkit-scrollbar-thumb {
-  background-color: rgba(156, 163, 175, 0.5);
-  border-radius: 4px;
-}
-.scroll-table::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(107, 114, 128, 0.8);
-}
-
-/* ================================
-   💬 배지 (Rule Count 등)
-================================ */
-.badge {
-  display: inline-block;
-  padding: 0.25rem 0.5rem;
-  border-radius: 4px;
-  font-size: 0.7rem;
+h5 {
+  color: #374151;
   font-weight: 600;
-  color: white;
-}
-.b-red {
-  background-color: #ef4444;
-}
-.b-amber {
-  background-color: #f59e0b;
-}
-.b-blue {
-  background-color: #3b82f6;
-}
-.b-gray {
-  background-color: #6b7280;
+  margin-bottom: 0.75rem;
+  font-size: 1rem;
 }
 
-/* ================================
-   ✨ 모달 내부 디자인
-================================ */
+/* 모달 스타일 */
 .modal-content {
   border-radius: 12px;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
 }
 .modal-header {
   background-color: #f9fafb;
   border-bottom: 1px solid #e5e7eb;
-}
-
-.modal-stats {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 1rem;
-  background: #f9fafb;
-  padding: 1rem;
-  border-radius: 8px;
-  margin: 1rem 0;
-  text-align: center;
-}
-.modal-stats .stat-label {
-  font-size: 0.75rem;
-  color: #6b7280;
-  margin-bottom: 0.3rem;
-}
-.modal-stats .stat-value {
-  font-size: 1.3rem;
-  font-weight: 700;
-  color: #111827;
-}
-.modal-stats .stat-value.base {
-  color: #10b981;
-}
-.modal-stats .stat-value.alert {
-  color: #ef4444;
-}
-.no-viol {
-  text-align: center;
-  color: #6b7280;
-  padding: 1rem;
 }
