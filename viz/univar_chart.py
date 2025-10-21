@@ -129,22 +129,383 @@ def make_univar_cards(input, df_view, df_baseline, PROCESS_GROUPS):
             else "정상"
         )
 
+        # -------------------------
+        # 📊 추세 계산 (최근 10개 데이터)
+        # -------------------------
+        trend_data = target_array[-10:] if len(target_array) >= 10 else target_array
+        if len(trend_data) >= 2:
+            # 선형 회귀로 추세 계산
+            x_trend = np.arange(len(trend_data))
+            slope, _ = np.polyfit(x_trend, trend_data, 1)
+            
+            # 추세 방향 결정
+            if abs(slope) < sigma * 0.1:  # 변화가 미미하면 안정
+                trend_icon = "→"
+                trend_class = "stable"
+                trend_text = "안정"
+            elif slope > 0:
+                trend_icon = "↗"
+                trend_class = "up"
+                trend_text = "상승"
+            else:
+                trend_icon = "↘"
+                trend_class = "down"
+                trend_text = "하락"
+        else:
+            trend_icon = "—"
+            trend_class = "stable"
+            trend_text = "데이터부족"
 
         # -------------------------
-        # 카드 HTML
+        # 📈 미니 스파크라인 생성
+        # -------------------------
+        sparkline_data = target_array[-20:] if len(target_array) >= 20 else target_array
+        # 정규화 (0~100 범위로)
+        if len(sparkline_data) > 1:
+            spark_min = sparkline_data.min()
+            spark_max = sparkline_data.max()
+            if spark_max > spark_min:
+                normalized = ((sparkline_data - spark_min) / (spark_max - spark_min) * 100)
+            else:
+                normalized = np.ones_like(sparkline_data) * 50
+        else:
+            normalized = [50]
+        
+        # SVG 패스 생성
+        points = " ".join([f"{i*100/len(normalized)},{100-v}" for i, v in enumerate(normalized)])
+        sparkline_svg = f"""
+        <svg class="sparkline" viewBox="0 0 100 100" preserveAspectRatio="none">
+            <polyline points="{points}" 
+                      fill="none" 
+                      stroke="currentColor" 
+                      stroke-width="2"
+                      vector-effect="non-scaling-stroke"/>
+        </svg>
+        """
+
+        # -------------------------
+        # 📊 관리한계 대비 위치 계산 (진행률 바)
+        # -------------------------
+        # CL을 기준으로 UCL/LCL 사이의 위치 (0~100%)
+        if ucl != lcl:
+            position_pct = ((current_val - lcl) / (ucl - lcl)) * 100
+            position_pct = max(0, min(100, position_pct))  # 0~100 제한
+        else:
+            position_pct = 50
+
+        # 색상 결정
+        if position_pct > 90 or position_pct < 10:
+            bar_color = "#ef4444"  # 빨강
+        elif position_pct > 75 or position_pct < 25:
+            bar_color = "#f59e0b"  # 주황
+        else:
+            bar_color = "#10b981"  # 초록
+
+        # -------------------------
+        # 🎨 향상된 카드 HTML
         # -------------------------
         card_html = f"""
-        <div class="var-card {status_class}" onclick="Shiny.setInputValue('card_click','{var}',{{priority:'event'}})">
-            <div class="var-card-header">
-                <div class="var-name">{var}</div>
-                <div class="var-status {status_class}">{status_text}</div>
+        <div class="var-card-enhanced {status_class}" onclick="Shiny.setInputValue('card_click','{var}',{{priority:'event'}})">
+            <div class="var-card-header-enhanced">
+                <div class="var-name-enhanced">{var}</div>
+                <div class="var-status-badge {status_class}">{status_text}</div>
             </div>
-            <div class="var-value {status_class}">{current_val:.2f}</div>
+            
+            <div class="var-value-section">
+                <div class="var-current-value {status_class}">
+                    {current_val:.2f}
+                </div>
+                <div class="var-trend {trend_class}">
+                    <span class="trend-icon">{trend_icon}</span>
+                    <span class="trend-text">{trend_text}</span>
+                </div>
+            </div>
+
+            <div class="var-sparkline-container">
+                {sparkline_svg}
+            </div>
+
+            <div class="var-limits-bar">
+                <div class="limits-labels">
+                    <span class="limit-lcl">LCL: {lcl:.1f}</span>
+                    <span class="limit-cl">CL: {cl:.1f}</span>
+                    <span class="limit-ucl">UCL: {ucl:.1f}</span>
+                </div>
+                <div class="progress-bar-container">
+                    <div class="progress-bar-bg">
+                        <div class="progress-bar-fill" style="width: {position_pct}%; background-color: {bar_color};"></div>
+                        <div class="progress-marker" style="left: {position_pct}%;"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="var-card-footer">
+                <span class="footer-hint">클릭하여 상세보기 →</span>
+            </div>
         </div>
         """
         cards.append(card_html)
 
-    return ui.HTML(f'<div class="var-cards-grid">{"".join(cards)}</div>')
+    # -------------------------
+    # 🎨 CSS 스타일 추가
+    # -------------------------
+    style_html = """
+    <style>
+    .var-card-enhanced {
+        background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
+        border-radius: 16px;
+        padding: 1.25rem;
+        cursor: pointer;
+        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        border: 2px solid #e5e7eb;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+        position: relative;
+        overflow: hidden;
+    }
+
+    .var-card-enhanced::before {
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 4px;
+        background: linear-gradient(90deg, #3b82f6, #8b5cf6);
+        opacity: 0;
+        transition: opacity 0.3s;
+    }
+
+    .var-card-enhanced:hover {
+        transform: translateY(-4px);
+        box-shadow: 0 12px 24px rgba(0,0,0,0.12);
+        border-color: #3b82f6;
+    }
+
+    .var-card-enhanced:hover::before {
+        opacity: 1;
+    }
+
+    .var-card-enhanced.alert {
+        border-color: #fca5a5;
+        background: linear-gradient(135deg, #fef2f2 0%, #fff5f5 100%);
+    }
+
+    .var-card-enhanced.alert::before {
+        background: linear-gradient(90deg, #ef4444, #dc2626);
+        opacity: 1;
+    }
+
+    .var-card-enhanced.warning {
+        border-color: #fcd34d;
+        background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%);
+    }
+
+    .var-card-enhanced.warning::before {
+        background: linear-gradient(90deg, #f59e0b, #d97706);
+        opacity: 1;
+    }
+
+    .var-card-header-enhanced {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 0.75rem;
+    }
+
+    .var-name-enhanced {
+        font-size: 0.95rem;
+        font-weight: 600;
+        color: #1f2937;
+        letter-spacing: -0.01em;
+    }
+
+    .var-status-badge {
+        padding: 0.25rem 0.75rem;
+        border-radius: 12px;
+        font-size: 0.75rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+
+    .var-status-badge:not(.alert):not(.warning) {
+        background: linear-gradient(135deg, #d1fae5, #a7f3d0);
+        color: #065f46;
+    }
+
+    .var-status-badge.alert {
+        background: linear-gradient(135deg, #fee2e2, #fecaca);
+        color: #991b1b;
+    }
+
+    .var-status-badge.warning {
+        background: linear-gradient(135deg, #fef3c7, #fde68a);
+        color: #92400e;
+    }
+
+    .var-value-section {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        margin-bottom: 1rem;
+    }
+
+    .var-current-value {
+        font-size: 2rem;
+        font-weight: 700;
+        color: #3b82f6;
+        line-height: 1;
+    }
+
+    .var-current-value.alert {
+        color: #ef4444;
+    }
+
+    .var-current-value.warning {
+        color: #f59e0b;
+    }
+
+    .var-trend {
+        display: flex;
+        align-items: center;
+        gap: 0.25rem;
+        padding: 0.25rem 0.5rem;
+        border-radius: 8px;
+        font-size: 0.85rem;
+        font-weight: 600;
+    }
+
+    .var-trend.up {
+        background: #dbeafe;
+        color: #1e40af;
+    }
+
+    .var-trend.down {
+        background: #fee2e2;
+        color: #991b1b;
+    }
+
+    .var-trend.stable {
+        background: #f3f4f6;
+        color: #6b7280;
+    }
+
+    .trend-icon {
+        font-size: 1.1rem;
+        line-height: 1;
+    }
+
+    .trend-text {
+        font-size: 0.75rem;
+    }
+
+    .var-sparkline-container {
+        height: 40px;
+        margin-bottom: 1rem;
+        position: relative;
+    }
+
+    .sparkline {
+        width: 100%;
+        height: 100%;
+        color: #3b82f6;
+        opacity: 0.7;
+    }
+
+    .var-card-enhanced.alert .sparkline {
+        color: #ef4444;
+    }
+
+    .var-card-enhanced.warning .sparkline {
+        color: #f59e0b;
+    }
+
+    .var-limits-bar {
+        margin-top: 0.75rem;
+    }
+
+    .limits-labels {
+        display: flex;
+        justify-content: space-between;
+        font-size: 0.7rem;
+        color: #6b7280;
+        margin-bottom: 0.35rem;
+        font-weight: 500;
+    }
+
+    .limit-lcl { color: #ef4444; }
+    .limit-cl { color: #10b981; }
+    .limit-ucl { color: #ef4444; }
+
+    .progress-bar-container {
+        position: relative;
+    }
+
+    .progress-bar-bg {
+        width: 100%;
+        height: 8px;
+        background: linear-gradient(90deg, 
+            #fecaca 0%, 
+            #fcd34d 25%, 
+            #a7f3d0 50%, 
+            #fcd34d 75%, 
+            #fecaca 100%);
+        border-radius: 4px;
+        position: relative;
+        overflow: hidden;
+    }
+
+    .progress-bar-fill {
+        height: 100%;
+        transition: width 0.5s ease, background-color 0.3s;
+        border-radius: 4px 0 0 4px;
+        opacity: 0.3;
+    }
+
+    .progress-marker {
+        position: absolute;
+        top: -2px;
+        transform: translateX(-50%);
+        width: 3px;
+        height: 12px;
+        background: #1f2937;
+        border-radius: 2px;
+        box-shadow: 0 0 4px rgba(0,0,0,0.3);
+    }
+
+    .var-card-footer {
+        margin-top: 0.75rem;
+        padding-top: 0.75rem;
+        border-top: 1px solid #e5e7eb;
+        text-align: center;
+    }
+
+    .footer-hint {
+        font-size: 0.75rem;
+        color: #9ca3af;
+        font-weight: 500;
+    }
+
+    .var-card-enhanced:hover .footer-hint {
+        color: #3b82f6;
+    }
+
+    .var-cards-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        gap: 1.25rem;
+        margin-top: 1rem;
+    }
+
+    @media (max-width: 768px) {
+        .var-cards-grid {
+            grid-template-columns: 1fr;
+        }
+    }
+    </style>
+    """
+
+    return ui.HTML(style_html + f'<div class="var-cards-grid">{"".join(cards)}</div>')
 
 
 # ====================== 단변량 모달 ======================
