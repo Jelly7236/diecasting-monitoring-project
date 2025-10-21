@@ -248,6 +248,13 @@ for mold in mold_list:
 
 print(f"\n총 로드된 모델 수: {len(rft_models)}개")
 
+### 다변량 관리도 정보 로드
+def load_multivar_chart_info():
+    df = pd.read_csv("./data/multivar_chart_info.csv")
+    df["mean_vector"] = df["mean_vector"].apply(json.loads)
+    return df
+multivar_info = load_multivar_chart_info()
+
 ### 단변량 관리도 ARIMA 모델 로드
 BASE_DIR = Path(__file__).parent
 ARIMA_INFO_PATH = BASE_DIR / "data" / "arima_model_info_updated.csv"
