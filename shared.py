@@ -249,3 +249,134 @@ for mold in mold_list:
 print(f"\n총 로드된 모델 수: {len(rft_models)}개")
 
 ### 단변량 관리도 ARIMA 모델 로드
+BASE_DIR = Path(__file__).parent
+ARIMA_INFO_PATH = BASE_DIR / "data" / "arima_model_info_updated.csv"
+
+arima_models = {}
+
+try:
+    arima_info = pd.read_csv(ARIMA_INFO_PATH)
+    print(f"📄 ARIMA 메타데이터 로드 완료: {len(arima_info)}행")
+except FileNotFoundError:
+    print(f"⚠️ 파일을 찾을 수 없습니다 → {ARIMA_INFO_PATH}")
+    arima_info = pd.DataFrame()
+
+for _, row in arima_info.iterrows():
+    mold = str(row.get("mold_code", "")).strip()
+    var = str(row.get("variable", "")).strip()
+    model_path = Path(row.get("model_path", "")).as_posix()
+    key = f"{mold}_{var}"
+
+    try:
+        model_file = BASE_DIR / Path(model_path)
+        if not model_file.exists():
+            raise FileNotFoundError(f"모델 파일이 존재하지 않음: {model_file}")
+
+        with open(model_file, "rb") as f:
+            model = joblib.load(f)
+
+        arima_models[key] = {
+            "model": model,
+            "mold": mold,
+            "variable": var,
+            "p": int(row.get("p", 0)),
+            "d": int(row.get("d", 0)),
+            "q": int(row.get("q", 0)),
+            "n_obs": int(row.get("n_obs_model", 0)),
+            "aic": float(row.get("aic", 0)),
+            "bic": float(row.get("bic", 0)),
+            "cl": float(row.get("CL", 0)),
+            "sigma": float(row.get("sigma", 0)),
+            "ucl": float(row.get("UCL_3sigma", 0)),
+            "lcl": float(row.get("LCL_3sigma", 0)),
+        }
+
+    except Exception as e:
+        print(f"⚠️ [{key}] 로드 실패 → {e}")
+
+print(f"✅ 총 {len(arima_models)}개 ARIMA 모델 로드 완료")
+
+
+# ====================================================
+# 3️⃣ 접근 유틸리티
+# ====================================================
+def get_arima_model(mold_code: str, variable: str):
+    """
+    mold_code와 variable로 ARIMA 모델 검색.
+    예:
+        m = get_arima_model("8412", "Coolant_temperature")
+        m["model"].forecast(steps=5)
+    """
+    key = f"{mold_code}_{variable}"
+    return arima_models.get(key)
+
+
+def list_arima_models():
+    """현재 로드된 ARIMA 모델 전체 목록 반환"""
+    return pd.DataFrame([
+        {
+            "key": k,
+            "mold": v["mold"],
+            "variable": v["variable"],
+            "p": v["p"],
+            "d": v["d"],
+            "q": v["q"]
+        }
+        for k, v in arima_models.items()
+    ])
+    
+    
+###  X–R 관리도 기준선 로드 (ARIMA 없는 변수용)
+
+def _load_xr_control_info(path: str = "./data/xr_control_info.csv") -> dict:
+    """X–R 관리도용 통계치(X̄̄, R̄, UCL/LCL) 계산"""
+    try:
+        xr_df = pd.read_csv(path)
+    except Exception as e:
+        print(f"⚠️ X–R 관리도 파일 로드 실패: {e}")
+        return {}
+
+    # X–R 관리도 상수 테이블 (서브그룹 크기 n별)
+    XR_CONSTANTS = {
+        2: {"A2": 1.880, "D3": 0.000, "D4": 3.267},
+        3: {"A2": 1.023, "D3": 0.000, "D4": 2.574},
+        4: {"A2": 0.729, "D3": 0.000, "D4": 2.282},
+        5: {"A2": 0.577, "D3": 0.000, "D4": 2.114},
+        6: {"A2": 0.483, "D3": 0.000, "D4": 2.004},
+        7: {"A2": 0.419, "D3": 0.076, "D4": 1.924},
+        8: {"A2": 0.373, "D3": 0.136, "D4": 1.864},
+        9: {"A2": 0.337, "D3": 0.184, "D4": 1.816},
+        10: {"A2": 0.308, "D3": 0.223, "D4": 1.777},
+    }
+
+    xr_limits = {}
+
+    for _, row in xr_df.iterrows():
+        n = int(row["n"])
+        const = XR_CONSTANTS.get(n, XR_CONSTANTS[5])  # 기본값 n=5
+        A2, D3, D4 = const["A2"], const["D3"], const["D4"]
+
+        cl_x = row["X_barbar"]
+        cl_r = row["R_bar"]
+
+        key = f"{row['mold_code']}_{row['variable']}"
+
+        xr_limits[key] = {
+            "mold": row["mold_code"],
+            "variable": row["variable"],
+            "n": n,
+            "k_subgroups": row["k_subgroups"],
+            "CL_X": cl_x,
+            "UCL_X": cl_x + A2 * cl_r,
+            "LCL_X": cl_x - A2 * cl_r,
+            "CL_R": cl_r,
+            "UCL_R": D4 * cl_r,
+            "LCL_R": D3 * cl_r,
+        }
+
+    print(f"✅ X–R 관리도 기준선 로드 완료: {len(xr_limits)}개")
+    return xr_limits
+
+
+# 전역 변수로 보관
+xr_limits = _load_xr_control_info()
