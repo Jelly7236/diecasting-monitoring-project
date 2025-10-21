@@ -1,0 +1,6 @@
+var,low_section_speed,high_section_speed,cast_pressure,biscuit_thickness,physical_strength
+low_section_speed,0.097403,-0.022078,-0.016883,0.161688,0.311039
+high_section_speed,-0.022078,0.362338,0.042857,-0.082468,0.246104
+cast_pressure,-0.016883,0.042857,0.222078,-0.06039,1.06039
+biscuit_thickness,0.161688,-0.082468,-0.06039,3.872403,0.145779
+physical_strength,0.311039,0.246104,1.06039,0.145779,120.054221
