@@ -39,7 +39,7 @@ def ui_monitoring():
         # 모델 설명 아코디언
         ui.div(
             ui.card(
-                ui.card_header("⚙️ 모델 설명"),
+                ui.card_header("모델 설명"),
                 ui.accordion(
                     ui.accordion_panel(
                         "개요 · 프로세스",
@@ -130,7 +130,7 @@ def ui_monitoring():
             ui.card(
                 ui.div(
                     ui.div(
-                        ui.span("📌 실시간 성능 지표", style="font-weight: 800; font-size: 1rem;"),
+                        ui.span("실시간 성능 지표", style="font-weight: 800; font-size: 1rem;"),
                         ui.div(
                             ui.input_select(
                                 "mon_mold_code",
@@ -152,7 +152,7 @@ def ui_monitoring():
         # ───────── 시계열 그래프 ─────────
         ui.div(
             ui.card(
-                ui.card_header("📈 실시간 예측 추이"),
+                ui.card_header("실시간 예측 추이"),
                 ui.output_ui("mon_timeseries_plot")
             ),
             class_="container section"
@@ -162,11 +162,11 @@ def ui_monitoring():
         ui.div(
             ui.layout_columns(
                 ui.card(
-                    ui.card_header("🧪 최근 샘플 10건"),
+                    ui.card_header("최근 샘플 10건"),
                     ui.div(ui.output_table("mon_sample_table"), class_="scroll-table")
                 ),
                 ui.card(
-                    ui.card_header("⚠️ 오류 샘플 (FP/FN)"),
+                    ui.card_header("오류 샘플 (FP/FN)"),
                     ui.div(ui.output_table("mon_error_table"), class_="scroll-table")
                 ),
                 col_widths=[6, 6]   # 필요하면 [7,5] 등으로 조정
@@ -360,12 +360,12 @@ def server_monitoring(input, output, session):
         fig.add_trace(go.Scatter(x=dfd["_tod"], y=rec,  mode="lines+markers", name="Recall"))
         fig.add_trace(go.Scatter(x=dfd["_tod"], y=f1,   mode="lines+markers", name="F1"))
 
-        fig.update_xaxes(type="date", tickformat="%H:%M", title_text="하루 시간대 (HH:MM)")
+        fig.update_xaxes(type="date", tickformat="%H:%M", title_text="시간")
         fig.update_layout(
             template="plotly_white",
             height=380,
             margin=dict(l=50, r=20, t=40, b=40),
-            yaxis=dict(title="누적 Score", range=[0, 1]),
+            yaxis=dict(title="누적 Score", range=[0.5, 1]),
             hovermode="x unified",
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             title="누적 Precision/Recall/F1 (time 축)"
