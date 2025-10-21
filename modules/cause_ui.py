@@ -70,10 +70,10 @@ def page_ui():
         ui.hr(style=MAXW),
 
         # 3) 분석: p-관리도 + SHAP
-        section("분석", "좌: p-관리도 / 우: SHAP 중요변수 기여도"),
+        section("분석", "좌: p-관리도 / 우: SHAP 중요변수 기여도 (내림차순 · 길수록 진한 색상)"),
         ui.div(
             ui.card(ui.card_header("p-관리도"), ui.output_ui("p_chart"), style=MCARD),
-            ui.card(ui.card_header("SHAP 중요변수 기여도"), ui.output_ui("shap_plot"), style=RIGHT),
+            ui.card(ui.card_header("SHAP 중요변수 기여도 (내림차순)"), ui.output_ui("shap_plot"), style=RIGHT),
             style=ROW,
         ),
 
@@ -82,7 +82,7 @@ def page_ui():
         # 4) 변수별 관계분석 (표 + 그래프)
         section(
             "변수별 관계분석",
-            "이탈변수/SHAP 기준 ‘변수+상태’ 사건횟수 Top 5 — (Score = SHAP횟수 + HIGH횟수 + LOW횟수)"
+            "이탈변수/SHAP 기준 ‘변수+상태’ 사건횟수 Top 5 — (원인 분석 횟수 = SHAP횟수 + HIGH횟수 + LOW횟수)"
         ),
         ui.div(
             ui.card(ui.card_header("순위표 · Top 5"), ui.output_ui("var_rel_table"), style=MCARD),

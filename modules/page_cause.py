@@ -150,8 +150,7 @@ def server_cause(input, output, session):
     @reactive.effect
     @reactive.event(input.btn_update_date)
     def _update_end():
-        if df_all.get("date") is not None and df_all["date"].notna().any():
-            session.send_input_message("p_end", {"value": str(df_all["date"].max().date())})
+        session.send_input_message("p_end", {"value": str(DEFAULT_END)})
 
     # ----- Dtrain + Ctest 결합 데이터(기간 필터) -----
     @reactive.calc
@@ -218,30 +217,69 @@ def server_cause(input, output, session):
         return int((ser["p_hat"] >= UCL3).sum())
 
     @render.ui
+    @reactive.event(input.btn_apply)
     def mold_cards():
         if not input.p_start() or not input.p_end():
             return ui.div("기간을 선택하세요.", style="text-align:center; padding:24px; color:#6b7280;")
         sd = pd.to_datetime(input.p_start()); ed = pd.to_datetime(input.p_end())
         if sd > ed: sd, ed = ed, sd
 
+        def _norm_mold_code(val) -> str:
+            s = str(val).strip()
+            return s[:-2] if s.endswith(".0") else s
+
         molds_all_ctest = set()
         if not df_all.empty and "mold_code" in df_all.columns:
-            molds_all_ctest = set(df_all["mold_code"].dropna().astype(str).str.strip().unique())
+            molds_all_ctest = {_norm_mold_code(v) for v in df_all["mold_code"].dropna()}
         molds_all_dtrain = set()
         dtrain_full = _read_csv_first(PATHS["DTRAIN"])
         if not dtrain_full.empty:
             dtrain_full = _clean_common(dtrain_full)
-            molds_all_dtrain = set(dtrain_full["mold_code"].dropna().astype(str).str.strip().unique())
-        molds_to_display = sorted(list(
-            molds_all_ctest | molds_all_dtrain | set(BASELINE_FILES_PER_MOLD.keys()) | DTRAIN_MOLDS
-        ))
+            molds_all_dtrain = {_norm_mold_code(v) for v in dtrain_full["mold_code"].dropna()}
+        molds_union = (
+            molds_all_ctest
+            | molds_all_dtrain
+            | {_norm_mold_code(k) for k in BASELINE_FILES_PER_MOLD.keys()}
+            | {_norm_mold_code(k) for k in DTRAIN_MOLDS}
+        )
+        molds_to_display = sorted(molds_union)
         if not molds_to_display:
             return ui.div("표시할 몰드 정보가 없습니다.", style="text-align:center; padding:24px; color:#6b7280;")
 
         base = data_in_period()
 
+        fault_counts = {}
+        fault_src = load_fault_samples()
+        if not fault_src.empty:
+            fault_period = fault_src.copy()
+            fault_period["date"] = pd.to_datetime(fault_period.get("date"), errors="coerce")
+            fault_period = fault_period[(fault_period["date"] >= sd) & (fault_period["date"] <= ed)]
+
+            mold_series = fault_period.get("mold_code")
+            if mold_series is not None:
+                fault_period["mold_code"] = mold_series.map(_norm_mold_code)
+            else:
+                fault_period["mold_code"] = ""
+
+            def _calc_fault_count(df_fault: pd.DataFrame) -> int:
+                if df_fault.empty:
+                    return 0
+                if "passorfail" in df_fault.columns:
+                    pf = pd.to_numeric(df_fault["passorfail"], errors="coerce").fillna(0)
+                    if not pf.empty:
+                        gt_zero = int((pf > 0).sum())
+                        summed = float(pf.clip(lower=0).sum())
+                        return max(int(round(summed)), gt_zero)
+                return int(df_fault.shape[0])
+
+            if not fault_period.empty:
+                for mold_key, grp in fault_period.groupby("mold_code"):
+                    fault_counts[_norm_mold_code(mold_key)] = _calc_fault_count(grp)
+
         def _card(mold: str):
-            sub = base[base["mold_code"].astype(str) == mold].copy() if not base.empty else pd.DataFrame()
+            mold_key = _norm_mold_code(mold)
+            sub = base[base["mold_code"].astype(str) == mold_key].copy() if not base.empty else pd.DataFrame()
+            fault_cnt = max(int(fault_counts.get(mold_key, 0)), 0)
 
             if sub.empty:
                 return ui.card(
@@ -253,8 +291,8 @@ def server_cause(input, output, session):
                     ),
                     ui.div(
                         ui.div(
-                            ui.span("누적 불량 0 건"),
-                            style="text-align:center; font-size:14px; font-weight:700;"
+                            ui.span(f"누적 불량 {fault_cnt:,} 건"),
+                            style="text-align:center; font-size:13px; font-weight:700;"
                         ),
                         style="padding:4px 0 8px 0;"
                     ),
@@ -263,7 +301,6 @@ def server_cause(input, output, session):
 
             n_all = int(sub.shape[0]); d_all = int((sub["passorfail"] == 1).sum())
             rate_all = (d_all / n_all * 100.0) if n_all > 0 else 0.0
-            oc_cnt = _count_pchart_violations(sub, mold)
 
             return ui.card(
                 ui.card_header(f"몰드 {mold}"),
@@ -274,8 +311,8 @@ def server_cause(input, output, session):
                 ),
                 ui.div(
                     ui.div(
-                        ui.span(f"누적 불량 {oc_cnt} 건"),
-                        style="text-align:center; font-size:14px; font-weight:700;"
+                        ui.span(f"누적 불량 {fault_cnt:,} 건"),
+                        style="text-align:center; font-size:13px; font-weight:700;"
                     ),
                     style="padding:4px 0 8px 0;"
                 ),
@@ -361,9 +398,9 @@ def server_cause(input, output, session):
         fig.add_hline(y=UCL3, line=dict(color="#EF4444", width=2), line_dash="dot",
                       annotation_text=f"UCL3 ({int(k3)}σ, {UCL3:.3f})", annotation_position="right")
         fig.update_layout(template="plotly_white", height=420,
-                          title=f"몰드 {mold} | 롤링 {NI}샷 p-관리도 | 기간: {sd.date()} ~ {ed.date()}",
+                          title=f"n={NI} p-관리도",
                           hovermode="x unified", margin=dict(l=40, r=20, t=40, b=40),
-                          xaxis_title="시간", yaxis_title=f"p̂(최근 {NI}샷 불량률)",
+                          xaxis_title="시간", yaxis_title=f"p̂(최근 불량률)",
                           legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
         return fig_html(fig, 420)
 
@@ -414,7 +451,16 @@ def server_cause(input, output, session):
         )
 
         # 4) 상위 15개만 시각화 (수량은 필요 시 조절 가능)
-        topn = imp_df.head(15)
+        topn = imp_df.head(15).reset_index(drop=True)
+        values = topn["중요도"].astype(float)
+        if not values.empty and values.max() != values.min():
+            marker_style = dict(
+                color=values.tolist(),
+                colorscale=[(0.0, "#BFDBFE"), (1.0, "#1D4ED8")],
+                showscale=False
+            )
+        else:
+            marker_style = dict(color="#1D4ED8")
 
         # 5) Plotly 바차트 (가독성 위해 가로막대)
         fig = go.Figure()
@@ -423,7 +469,7 @@ def server_cause(input, output, session):
             y=topn["변수"].values.tolist(),
             orientation="h",
             hovertemplate="%{y}<br>평균 |SHAP|: %{x:.5f}<extra></extra>",
-            marker=dict(color="#60A5FA")  # 하늘색 계열
+            marker=marker_style
         ))
         fig.update_layout(
             template="plotly_white",
@@ -432,6 +478,11 @@ def server_cause(input, output, session):
             title="SHAP 중요 변수 기여도 (평균 |SHAP|)",
             xaxis_title="평균 |SHAP|",
             yaxis_title="변수",
+            yaxis=dict(
+                categoryorder="array",
+                categoryarray=topn["변수"].tolist(),
+                autorange="reversed"
+            ),
             showlegend=False
         )
 
@@ -535,7 +586,7 @@ def server_cause(input, output, session):
         return ui.HTML(f"""
         <style>
         .tbl-wrap {{ max-height:280px; overflow-y:auto; border:1px solid #e5e7eb; border-radius:6px; }}
-        table.tbl-sample-log {{ width:100%; table-layout:fixed; border-collapse:collapse; font-size:14px; }}
+        table.tbl-sample-log {{ width:100%; table-layout:fixed; border-collapse:collapse; font-size:13px; }}
         table.tbl-sample-log caption {{ caption-side:top; text-align:center; font-weight:700; padding:6px 0 4px; }}
         table.tbl-sample-log thead th {{ text-align:left; position:sticky; top:0; background:#fff; z-index:1; border-bottom:1px solid #e5e7eb; padding:8px 10px; font-weight:700; }}
         table.tbl-sample-log tbody td {{ text-align:left; vertical-align:top; padding:8px 10px; border-bottom:1px solid #f1f5f9; word-break:break-word; font-variant-numeric:tabular-nums; }}
@@ -625,11 +676,11 @@ def server_cause(input, output, session):
             return ui.HTML('<div style="padding:8px;color:#6b7280;">데이터가 없습니다.</div>')
 
         pretty = df_top[["rank","변수","Score","상태","shap","high","low"]].rename(columns={
-            "rank":"Rank","변수":"변수","Score":"Score","상태":"상태","shAP":"SHAP횟수","high":"HIGH횟수","low":"LOW횟수"
+            "rank":"Rank","변수":"변수","Score":"원인 분석 횟수","상태":"상태","shAP":"SHAP횟수","high":"HIGH횟수","low":"LOW횟수"
         })
         # 오타 방지 재정의
         pretty = df_top[["rank","변수","Score","상태","shap","high","low"]].rename(columns={
-            "rank":"Rank","변수":"변수","Score":"Score","상태":"상태","shap":"SHAP횟수","high":"HIGH횟수","low":"LOW횟수"
+            "rank":"Rank","변수":"변수","Score":"원인 분석 횟수","상태":"상태","shap":"SHAP횟수","high":"HIGH횟수","low":"LOW횟수"
         })
 
         html = pretty.to_html(index=False, classes="var-rel-table", border=0)
@@ -720,7 +771,7 @@ def server_cause(input, output, session):
         fig = go.Figure()
         fig.add_trace(go.Bar(
             x=x, y=y, marker_color=colors,
-            hovertemplate="%{x}<br>Score: %{y}<extra></extra>",
+            hovertemplate="%{x}<br>원인 분석 횟수: %{y}<extra></extra>",
             name=""
         ))
         # 색상 범례(LOW/HIGH)
@@ -732,11 +783,11 @@ def server_cause(input, output, session):
         fig.update_layout(template="plotly_white", height=340,
                           margin=dict(l=40, r=20, t=30, b=70),
                           xaxis_title="변수(상태)",
-                          yaxis_title="Score",
+                          yaxis_title="원인 분석 횟수",
                           legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
                           annotations=[dict(
                               x=0, y=-0.22, xref="paper", yref="paper",
-                              text="Score = SHAP횟수 + HIGH횟수 + LOW횟수",
+                              text="원인 기여도 = SHAP횟수 + HIGH횟수 + LOW횟수",
                               showarrow=False, align="left", font=dict(color="#6b7280")
                           )])
         return fig_html(fig, 340)
