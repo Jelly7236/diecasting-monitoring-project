@@ -8,6 +8,8 @@ from matplotlib import font_manager as fm
 import os
 import json
 import sys
+from shiny import reactive
+
 
 from models.FinalModel.smote_sampler import MajorityVoteSMOTENC
 
@@ -53,6 +55,8 @@ setup_korean_font()
 
 # Data Load
 streaming_df = pd.read_csv(data_dir / "train2.csv")
+prediction_state = reactive.Value(pd.DataFrame()) ### 여기추가
+current_state = reactive.Value(pd.DataFrame())  # ✅ 실시간 공정 데이터 (센서 기반)
 
 # 시간 칼럼 통합 (옵션)
 streaming_df["datetime"] = pd.to_datetime(streaming_df["date"] + " " + streaming_df["time"])
@@ -243,3 +247,5 @@ for mold in mold_list:
         print(f"⚠️ 모델 로드 실패 ({mold}): {e}")
 
 print(f"\n총 로드된 모델 수: {len(rft_models)}개")
+
+### 단변량 관리도 ARIMA 모델 로드

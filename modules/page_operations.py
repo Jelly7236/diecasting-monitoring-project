@@ -1,8 +1,7 @@
-# modules/page_operations.py
 from shiny import ui, render, reactive
 import pandas as pd
 import numpy as np
-from shared import streaming_df, iso_models, iso_features
+from shared import streaming_df, iso_models, iso_features, current_state, prediction_state
 from utils.real_time_streamer import RealTimeStreamer
 from utils.kpi_metrics import calculate_realtime_metrics
 from utils.realtime_predictor import predict_quality
@@ -178,6 +177,8 @@ def server_operations(input, output, session):
         current_data.set(pd.DataFrame())
         detected_data.set(pd.DataFrame())
         prediction_data.set(pd.DataFrame())
+        current_state.set(pd.DataFrame())   # ✅ 전역 current_state 초기화
+        prediction_state.set(pd.DataFrame())
         is_streaming.set(False)
 
     # -----------------------------
@@ -190,7 +191,9 @@ def server_operations(input, output, session):
             s = streamer()
             new_batch = s.get_next_batch(1)
             if new_batch is not None and not new_batch.empty:
-                current_data.set(s.get_current_data())
+                df_now = s.get_current_data()
+                current_data.set(df_now)
+                current_state.set(df_now)  # ✅ 전역 동기화 (shared에서 사용 가능)
 
     # -----------------------------
     # 스트리밍 상태
@@ -216,8 +219,7 @@ def server_operations(input, output, session):
             if model is None:
                 continue
             X = group.copy()
-            missing_cols = [c for c in iso_features if c not in X.columns]
-            for c in missing_cols:
+            for c in [c for c in iso_features if c not in X.columns]:
                 X[c] = 0
             X = X[iso_features]
             preds = model.predict(X)
@@ -246,7 +248,7 @@ def server_operations(input, output, session):
         return base_metrics
 
     # -----------------------------
-    # ✅ 실시간 불량 예측 (루프 방지 + 실제값 비교)
+    # ✅ 실시간 불량 예측 (실제값 비교)
     # -----------------------------
     @reactive.effect
     @reactive.event(current_data)
@@ -271,12 +273,11 @@ def server_operations(input, output, session):
                 "actual": actual
             }])
             updated = pd.concat([hist, new_row], ignore_index=True)
-            # if len(updated) > 50:
-            #     updated = updated.tail(50)
             prediction_data.set(updated)
+            prediction_state.set(updated)
 
     # -----------------------------
-    # 예측 결과 출력 (실제값 비교 포함)
+    # 출력
     # -----------------------------
     @output
     @render.table
@@ -289,12 +290,8 @@ def server_operations(input, output, session):
         df["실제결과"] = df["actual"].map({0: "양품", 1: "불량"})
         df["일치여부"] = np.where(df["pred"] == df["actual"], "✅ 일치", "❌ 불일치")
         df["불량확률(%)"] = (df["prob"] * 100).round(1)
-        df = df[["datetime", "mold", "실제결과", "예측결과", "일치여부", "불량확률(%)"]]
-        return df.tail(10).reset_index(drop=True)
+        return df[["datetime", "mold", "실제결과", "예측결과", "일치여부", "불량확률(%)"]].tail(10)
 
-    # -----------------------------
-    # KPI 출력
-    # -----------------------------
     @output
     @render.text
     def abnormal_count(): return f"{metrics()['abnormal']}"
@@ -315,9 +312,6 @@ def server_operations(input, output, session):
     @render.text
     def oee_value(): return f"{metrics().get('oee', 0)*100:.1f}%"
 
-    # -----------------------------
-    # 그래프 출력
-    # -----------------------------
     @output
     @render.plot
     def live_plot(): return plot_live(current_data(), input.sensor_select())
@@ -330,9 +324,6 @@ def server_operations(input, output, session):
     @render.plot
     def mold_ratio(): return plot_mold_ratio(metrics()["molds"])
 
-    # -----------------------------
-    # 몰드별 카드
-    # -----------------------------
     for mold in MOLD_CODES:
         @output(id=f"mold_{mold}_pie")
         @render.plot
@@ -351,9 +342,6 @@ def server_operations(input, output, session):
                 style="text-align:center; padding:0.5rem;"
             )
 
-    # -----------------------------
-    # 로그 출력
-    # -----------------------------
     @output
     @render.table
     def recent_data():
