@@ -15,11 +15,11 @@ def check_nelson_rules(data, mean, ucl, lcl, sigma):
         elif data[i] < lcl:
             violations.append((i+1, "Rule 1", "LCL 미만", data[i]))
 
-        if i >= 8:
-            if all(data[i-j] > mean for j in range(9)):
-                violations.append((i+1, "Rule 2", "연속 9개 점이 중심선 위", data[i]))
-            elif all(data[i-j] < mean for j in range(9)):
-                violations.append((i+1, "Rule 2", "연속 9개 점이 중심선 아래", data[i]))
+        # if i >= 8:
+        #     if all(data[i-j] > mean for j in range(9)):
+        #         violations.append((i+1, "Rule 2", "연속 9개 점이 중심선 위", data[i]))
+        #     elif all(data[i-j] < mean for j in range(9)):
+        #         violations.append((i+1, "Rule 2", "연속 9개 점이 중심선 아래", data[i]))
 
         if i >= 5:
             increasing = all(data[i-j] < data[i-j+1] for j in range(5, 0, -1))
