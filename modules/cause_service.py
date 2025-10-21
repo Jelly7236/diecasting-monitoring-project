@@ -1,19 +1,40 @@
+# cause_service.py
 import numpy as np
 import pandas as pd
-from datetime import timedelta
 from io import StringIO
+from math import sqrt
 
-def snapshot_filter(df_all: pd.DataFrame, mold: str, end_date: pd.Timestamp, window_days: int = 20):
+# ---- 스냅샷 필터 ----
+def snapshot_filter(
+    df_all: pd.DataFrame,
+    mold: str,
+    end_date: pd.Timestamp,
+    start_date: pd.Timestamp | None = None,
+):
+    """
+    선택한 몰드에 대해 [start_date ~ end_date] 구간 필터.
+    start_date가 None이면 해당 몰드의 '최초 일자'를 자동 사용.
+    """
     if df_all.empty or mold is None or pd.isna(end_date):
         return pd.DataFrame(columns=df_all.columns)
 
     end = pd.to_datetime(end_date).normalize()
-    start = end - timedelta(days=window_days)
-    ms = (df_all["mold_code"] == mold) & (
-        df_all["date"].isna() | ((df_all["date"] >= start) & (df_all["date"] <= end))
-    )
-    return df_all.loc[ms].copy()
+    sub = df_all.copy()
+    sub = sub[sub["mold_code"] == mold] if mold is not None else sub
 
+    if start_date is None:
+        smin = sub["date"].dropna().min()
+        if pd.isna(smin):
+            smin = df_all["date"].dropna().min()
+        start = pd.to_datetime(smin).normalize() if pd.notna(smin) else end
+    else:
+        start = pd.to_datetime(start_date).normalize()
+
+    ms = sub["date"].isna() | ((sub["date"] >= start) & (sub["date"] <= end))
+    return sub.loc[ms].copy()
+
+
+# ---- 로그 테이블(일자 집계용) ----
 def build_log_table(dff: pd.DataFrame) -> pd.DataFrame:
     if dff.empty:
         return pd.DataFrame({"메시지": ["데이터/기간 없음"]})
@@ -40,10 +61,10 @@ def build_log_table(dff: pd.DataFrame) -> pd.DataFrame:
     rows = []
     seq = 1
     for day, grp in dff.groupby(dff["date"].dt.floor("D"), dropna=False):
-        pi = float(dt.loc[dt["date"] == day, "p"].values[0])
+        pi = float(dt.loc[dt["date"] == day, "p"].values[0]) if (dt["date"] == day).any() else 0.0
         oc_state = "UCL 초과" if pi > UCL else ("LCL 미만" if pi < LCL else "정상")
-        anom_state = bool(z_anom.loc[dt["date"] == day].values[0])
-        anom_score = float(abs(z.loc[dt["date"] == day].values[0]))
+        anom_state = bool(z_anom.loc[dt["date"] == day].values[0]) if (dt["date"] == day).any() else False
+        anom_score = float(abs(z.loc[dt["date"] == day].values[0])) if (dt["date"] == day).any() else 0.0
 
         for _, r in grp.iterrows():
             shap1 = shap2 = ""; top_var = ""
@@ -78,7 +99,73 @@ def build_log_table(dff: pd.DataFrame) -> pd.DataFrame:
     log = pd.DataFrame(rows)
     return log[cols] if not log.empty else pd.DataFrame({"메시지": ["로그 없음"]})
 
+
+# ---- 다운로드용 CSV 바이트 ----
 def report_csv_bytes(df_log: pd.DataFrame) -> bytes:
     buf = StringIO()
     df_log.to_csv(buf, index=False, encoding="utf-8-sig")
     return buf.getvalue().encode("utf-8-sig")
+
+
+# ===== 롤링 60샷 p-관리도 계산 (A-샷만) =====
+def _agresti_coull(x: int, n: int) -> float:
+    return (x + 2) / (n + 4) if n > 0 else float("nan")
+
+def build_rolling_p_series(dff: pd.DataFrame, n_window: int = 60):
+    """
+    입력: 선택 기간·몰드로 필터된 df (date, tryshot_signal, passorfail 포함)
+    출력: (series_df, limits_dict)
+      - series_df: date, p_hat, risk_level
+      - limits: {"pbar":..., "UCL2":..., "UCL3":..., "LCL3":..., "n_window":...}
+    """
+    if dff.empty or "date" not in dff.columns:
+        return pd.DataFrame(columns=["date","p_hat","risk_level"]), {"pbar":np.nan,"UCL2":np.nan,"UCL3":np.nan,"LCL3":np.nan,"n_window":n_window}
+
+    df = dff.dropna(subset=["date"]).copy()
+    df = df.sort_values("date", kind="mergesort")
+
+    # A-샷만
+    if "tryshot_signal" in df.columns:
+        isA = df["tryshot_signal"].astype(str).str.strip().str.upper().eq("A")
+        dfA = df[isA].copy()
+    else:
+        dfA = df.copy()
+
+    if dfA.empty:
+        return pd.DataFrame(columns=["date","p_hat","risk_level"]), {"pbar":np.nan,"UCL2":np.nan,"UCL3":np.nan,"LCL3":np.nan,"n_window":n_window}
+
+    # 불량여부 시퀀스
+    if "passorfail" in dfA.columns:
+        defect = pd.to_numeric(dfA["passorfail"], errors="coerce").fillna(0).astype(int).clip(0,1)
+    else:
+        defect = pd.to_numeric(dfA.get("d", 0), errors="coerce").fillna(0).astype(int).clip(0,1)
+
+    # pbar (Agresti–Coull) — 선택 구간의 A-샷 기반
+    x = int(defect.sum()); nA = int(defect.shape[0])
+    pbar = _agresti_coull(x, nA) if nA > 0 else np.nan
+    if not pd.notna(pbar):
+        return pd.DataFrame(columns=["date","p_hat","risk_level"]), {"pbar":np.nan,"UCL2":np.nan,"UCL3":np.nan,"LCL3":np.nan,"n_window":n_window}
+
+    sigma = sqrt(max(pbar * (1 - pbar) / n_window, 1e-16))
+    UCL2 = pbar + 2*sigma
+    UCL3 = pbar + 3*sigma
+    LCL3 = max(0.0, pbar - 3*sigma)
+
+    # 롤링 60샷 불량합 / 60
+    roll_def = defect.rolling(window=n_window, min_periods=n_window).sum()
+    p_hat = (roll_def / n_window).rename("p_hat")
+
+    # 유효 구간만 (창이 찬 A-행들)
+    valid = p_hat.dropna()
+    series = pd.DataFrame({
+        "date": dfA.loc[valid.index, "date"].values,
+        "p_hat": valid.values
+    })
+
+    # 위험도 라벨
+    series["risk_level"] = "NORMAL"
+    series.loc[series["p_hat"] >= UCL3, "risk_level"] = "CRITICAL"
+    series.loc[(series["p_hat"] < UCL3) & (series["p_hat"] >= UCL2), "risk_level"] = "CAUTION"
+
+    limits = {"pbar":pbar, "UCL2":UCL2, "UCL3":UCL3, "LCL3":LCL3, "n_window":n_window}
+    return series, limits

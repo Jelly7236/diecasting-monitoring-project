@@ -1,11 +1,115 @@
 # modules/page_cause.py
 from shiny import ui, render, reactive
 import pandas as pd
+import numpy as np
+import plotly.graph_objs as go
+import ast
+from math import sqrt
 
-from .cause_data import load_quality_from_file
+from .cause_data import load_quality_from_file, load_fault_samples, load_var_labels
 from .cause_ui import page_ui
-from .cause_viz import fig_html, build_p_chart, build_shap_bar, mold_cards_html
-from .cause_service import snapshot_filter, build_log_table, report_csv_bytes
+from .cause_viz import fig_html, build_shap_bar
+from .cause_service import snapshot_filter
+
+# ===== 고정 파라미터 =====
+NI = 60
+SPLIT_DAY = pd.Timestamp("2019-03-12")     # 3/12까지 Dtrain, 이후 Ctest
+DEFAULT_START = pd.Timestamp("2019-03-01").date()
+DEFAULT_END   = pd.Timestamp("2019-03-12").date()
+
+# ===== 학습 소스 =====
+PATHS = {
+    "D8413": ["./data/D8413.csv", "/mnt/data/D8413.csv"],
+    "D8576": ["./data/D8576.csv", "/mnt/data/D8576.csv"],
+    "DTRAIN": ["./data/Dtrain.csv", "/mnt/data/Dtrain.csv"],
+    "CTEST":  ["./data/Ctest.csv",  "/mnt/data/Ctest.csv"],
+}
+BASELINE_FILES_PER_MOLD = {"8413": "D8413", "8576": "D8576"}
+DTRAIN_MOLDS = {"8722", "8412", "8917"}
+
+# 👉 8722/8917은 4σ, 나머지 3σ
+SIGMA_POLICY = {"8722": 4.0, "8917": 4.0}
+
+# ---------------- 유틸 ----------------
+def _read_csv_first(paths):
+    for p in paths:
+        try:
+            df = pd.read_csv(p)
+            if not df.empty:
+                return df
+        except Exception:
+            pass
+    return pd.DataFrame()
+
+def _clean_common(df: pd.DataFrame) -> pd.DataFrame:
+    ren = {
+        "Date": "date", "DATE": "date",
+        "MOLD": "mold_code", "Mold": "mold_code", "mold": "mold_code",
+        "PassOrFail": "passorfail",
+        "tryshot_signal": "tryshot_signal", "tryshot": "tryshot_signal",
+        "Count": "count", "ShotNo": "count", "shot_no": "count", "shot": "count",
+        "Time": "time", "timestamp": "time",
+    }
+    for k, v in ren.items():
+        if k in df.columns and v not in df.columns:
+            df = df.rename(columns={k: v})
+    df["date"] = pd.to_datetime(df.get("date"), errors="coerce")
+    df["time"] = df.get("time", "")
+    df["count"] = pd.to_numeric(df.get("count"), errors="coerce")
+    if "count" not in df.columns:
+        df["count"] = np.arange(len(df))
+    df["mold_code"] = df.get("mold_code", "UNKNOWN").astype(str)
+    df["tryshot_signal"] = df.get("tryshot_signal", "")
+    df["passorfail"] = pd.to_numeric(df.get("passorfail"), errors="coerce").fillna(0).astype(int)
+    return df
+
+def agresti_coull(x: int, n: int) -> float:
+    return (x + 2) / (n + 4) if n > 0 else float("nan")
+
+def learn_pbar_map() -> dict:
+    out = {}
+    # 전용(8413/8576)
+    for mold, key in BASELINE_FILES_PER_MOLD.items():
+        df = _clean_common(_read_csv_first(PATHS[key]))
+        if df.empty:
+            out[mold] = np.nan; continue
+        g = df[df["mold_code"] == mold]
+        A = g[g["tryshot_signal"] == "A"]
+        out[mold] = agresti_coull(int((A["passorfail"] == 1).sum()), int(A.shape[0]))
+    # Dtrain 3/01~3/12 (8722/8412/8917)
+    dtrain = _clean_common(_read_csv_first(PATHS["DTRAIN"]))
+    if not dtrain.empty:
+        d = dtrain["date"]
+        dtrain = dtrain[(d.dt.month == 3) & (d.dt.day >= 1) & (d.dt.day <= 12)]
+        for mold in DTRAIN_MOLDS:
+            g = dtrain[dtrain["mold_code"] == mold]
+            A = g[g["tryshot_signal"] == "A"]
+            out[mold] = agresti_coull(int((A["passorfail"] == 1).sum()), int(A.shape[0]))
+    return out
+
+def make_limits_no_lcl(pbar: float, n_i: int, k2: float = 2.0, k3: float = 3.0):
+    if not pd.notna(pbar):
+        return (np.nan, np.nan, np.nan)
+    sigma = np.sqrt(pbar * (1 - pbar) / n_i)
+    return (pbar, pbar + k2 * sigma, pbar + k3 * sigma)
+
+def _build_time_axis(df: pd.DataFrame) -> pd.Series:
+    dt = pd.to_datetime(df["date"].dt.date)
+    if "time" in df.columns and df["time"].notna().any():
+        tt = pd.to_datetime(df["time"], errors="coerce")
+        dt = pd.to_datetime(df["date"].dt.date) \
+           + pd.to_timedelta(tt.dt.hour.fillna(0).astype(int), "h") \
+           + pd.to_timedelta(tt.dt.minute.fillna(0).astype(int), "m") \
+           + pd.to_timedelta(tt.dt.second.fillna(0).astype(int), "s")
+    off = pd.to_timedelta(pd.to_numeric(df["count"], errors="coerce").fillna(0).astype(int), "s")
+    return dt + off
+
+def _norm_status(v):
+    if v is None: return None
+    t = str(v).strip().lower()
+    if t in {"하한","하한이탈","low","lower","lo"}:  return "low"
+    if t in {"상한","상한이탈","high","upper","hi"}: return "high"
+    return t
 
 # ============================== UI ===============================
 def ui_cause():
@@ -13,67 +117,677 @@ def ui_cause():
 
 # ============================ SERVER =============================
 def server_cause(input, output, session):
+    # 상단(카드/필터)은 동료 버전 로직
     df_all = load_quality_from_file()
+    df_fault = load_fault_samples()
+    var_map = load_var_labels()
 
-    # 초기 컨트롤
-    molds = sorted(df_all["mold_code"].unique().tolist()) if not df_all.empty else []
-    session.send_input_message("p_mold", {"choices": molds, "selected": (molds[0] if molds else None)})
-    if df_all["date"].notna().any():
-        latest = df_all["date"].max().date()
-        session.send_input_message("p_date", {"value": str(latest)})
+    # ----- 기본 날짜: 3/01 ~ 3/12 로 초기화 -----
+    session.send_input_message("p_start", {"value": str(DEFAULT_START)})
+    session.send_input_message("p_end",   {"value": str(DEFAULT_END)})
 
-    # 최신 날짜 버튼
+    # ----- 몰드 선택(“전체” 포함) -----
+    @render.ui
+    def p_mold_ui():
+        molds_all_ctest = set()
+        if not df_all.empty and "mold_code" in df_all.columns:
+            molds_all_ctest = set(df_all["mold_code"].dropna().astype(str).str.strip().unique())
+
+        molds_all_dtrain = set()
+        dtrain_full = _read_csv_first(PATHS["DTRAIN"])
+        if not dtrain_full.empty:
+            dtrain_full = _clean_common(dtrain_full)
+            molds_all_dtrain = set(dtrain_full["mold_code"].dropna().astype(str).str.strip().unique())
+
+        molds = sorted(list(
+            molds_all_ctest | molds_all_dtrain | set(BASELINE_FILES_PER_MOLD.keys()) | DTRAIN_MOLDS
+        ))
+        return ui.input_select("p_mold", "몰드", choices=["전체"] + molds,
+                               selected=(molds[0] if molds else "전체"),
+                               multiple=False)
+
+    # ----- 최신 날짜 버튼: 종료일을 데이터 최신일로 -----
     @reactive.effect
     @reactive.event(input.btn_update_date)
-    def _update_date_to_latest():
-        if df_all["date"].notna().any():
-            latest = df_all["date"].max().date()
-            session.send_input_message("p_date", {"value": str(latest)})
+    def _update_end():
+        session.send_input_message("p_end", {"value": str(DEFAULT_END)})
 
-    # 적용 스냅샷
+    # ----- Dtrain + Ctest 결합 데이터(기간 필터) -----
     @reactive.calc
     @reactive.event(input.btn_apply)
-    def filt():
-        if df_all.empty or input.p_mold() is None or input.p_date() is None:
-            return pd.DataFrame(columns=df_all.columns)
-        return snapshot_filter(df_all, input.p_mold(), pd.to_datetime(input.p_date()))
+    def data_in_period() -> pd.DataFrame:
+        if not input.p_start() or not input.p_end():
+            return pd.DataFrame()
+        sd = pd.to_datetime(input.p_start()); ed = pd.to_datetime(input.p_end())
+        if sd > ed: sd, ed = ed, sd
 
-    # 상단: 몰드별 누적 카드 (가로 한 줄)
+        parts = []
+        dtrain = _read_csv_first(PATHS["DTRAIN"])
+        if not dtrain.empty and sd <= SPLIT_DAY:
+            dtrain = _clean_common(dtrain)
+            parts.append(dtrain[(dtrain["date"] >= sd) & (dtrain["date"] <= min(ed, SPLIT_DAY))])
+
+        if not df_all.empty and ed > SPLIT_DAY:
+            parts.append(df_all[(df_all["date"] > SPLIT_DAY) & (df_all["date"] <= ed)])
+
+        if not parts:
+            return pd.DataFrame()
+
+        base = pd.concat(parts, ignore_index=True)
+        return base[(base["date"] >= sd) & (base["date"] <= ed)].copy()
+
+    # ----- 공통 필터(‘전체’ or 몰드 필터) -----
+    @reactive.calc
+    @reactive.event(input.btn_apply)
+    def filt() -> pd.DataFrame:
+        base_data = data_in_period()
+        if base_data.empty:
+            return pd.DataFrame()
+        if input.p_mold() in (None, "전체"):
+            return base_data
+        return base_data[base_data["mold_code"] == input.p_mold()].copy()
+
+    # ----- 선택 요약 -----
+    @render.text
+    @reactive.event(input.btn_apply)
+    def sel_summary():
+        sd = pd.to_datetime(input.p_start()).date() if input.p_start() else None
+        ed = pd.to_datetime(input.p_end()).date() if input.p_end() else None
+        if not (sd and ed): return "선택값이 없습니다."
+        mold_txt = "전체 몰드" if input.p_mold() == "전체" else f"몰드 {input.p_mold()}"
+        return f"[선택] {mold_txt} | 기간: {sd} ~ {ed}"
+
+    # ========== (A) 몰드별 누적 현황(동료) ==========
+    def _count_pchart_violations(df_mold_period: pd.DataFrame, mold: str) -> int:
+        if df_mold_period.empty:
+            return 0
+        pbar = learn_pbar_map().get(str(mold), np.nan)
+        if not pd.notna(pbar):
+            return 0
+        k3 = SIGMA_POLICY.get(str(mold), 3.0)
+        _, _, UCL3 = make_limits_no_lcl(pbar, NI, k2=2.0, k3=k3)
+        dfm = df_mold_period.sort_values([c for c in ["date","time","count"] if c in df_mold_period.columns], kind="mergesort").copy()
+        is_A = dfm["tryshot_signal"].eq("A")
+        idx_A = dfm.index[is_A]
+        roll_def = (dfm.loc[is_A, "passorfail"] == 1).astype(int).rolling(NI, min_periods=NI).sum()
+        dfm["p_hat"] = np.nan
+        dfm.loc[idx_A[roll_def.notna()], "p_hat"] = roll_def.dropna().to_numpy() / NI
+        ser = dfm.dropna(subset=["p_hat"])
+        if ser.empty: return 0
+        return int((ser["p_hat"] >= UCL3).sum())
+
     @render.ui
+    @reactive.event(input.btn_apply)
     def mold_cards():
-        return mold_cards_html(df_all)
+        if not input.p_start() or not input.p_end():
+            return ui.div("기간을 선택하세요.", style="text-align:center; padding:24px; color:#6b7280;")
+        sd = pd.to_datetime(input.p_start()); ed = pd.to_datetime(input.p_end())
+        if sd > ed: sd, ed = ed, sd
 
-    # p-관리도
+        def _norm_mold_code(val) -> str:
+            s = str(val).strip()
+            return s[:-2] if s.endswith(".0") else s
+
+        molds_all_ctest = set()
+        if not df_all.empty and "mold_code" in df_all.columns:
+            molds_all_ctest = {_norm_mold_code(v) for v in df_all["mold_code"].dropna()}
+        molds_all_dtrain = set()
+        dtrain_full = _read_csv_first(PATHS["DTRAIN"])
+        if not dtrain_full.empty:
+            dtrain_full = _clean_common(dtrain_full)
+            molds_all_dtrain = {_norm_mold_code(v) for v in dtrain_full["mold_code"].dropna()}
+        molds_union = (
+            molds_all_ctest
+            | molds_all_dtrain
+            | {_norm_mold_code(k) for k in BASELINE_FILES_PER_MOLD.keys()}
+            | {_norm_mold_code(k) for k in DTRAIN_MOLDS}
+        )
+        molds_to_display = sorted(molds_union)
+        if not molds_to_display:
+            return ui.div("표시할 몰드 정보가 없습니다.", style="text-align:center; padding:24px; color:#6b7280;")
+
+        base = data_in_period()
+
+        fault_counts = {}
+        fault_src = load_fault_samples()
+        if not fault_src.empty:
+            fault_period = fault_src.copy()
+            fault_period["date"] = pd.to_datetime(fault_period.get("date"), errors="coerce")
+            fault_period = fault_period[(fault_period["date"] >= sd) & (fault_period["date"] <= ed)]
+
+            mold_series = fault_period.get("mold_code")
+            if mold_series is not None:
+                fault_period["mold_code"] = mold_series.map(_norm_mold_code)
+            else:
+                fault_period["mold_code"] = ""
+
+            def _calc_fault_count(df_fault: pd.DataFrame) -> int:
+                if df_fault.empty:
+                    return 0
+                if "passorfail" in df_fault.columns:
+                    pf = pd.to_numeric(df_fault["passorfail"], errors="coerce").fillna(0)
+                    if not pf.empty:
+                        gt_zero = int((pf > 0).sum())
+                        summed = float(pf.clip(lower=0).sum())
+                        return max(int(round(summed)), gt_zero)
+                return int(df_fault.shape[0])
+
+            if not fault_period.empty:
+                for mold_key, grp in fault_period.groupby("mold_code"):
+                    fault_counts[_norm_mold_code(mold_key)] = _calc_fault_count(grp)
+
+        def _card(mold: str):
+            mold_key = _norm_mold_code(mold)
+            sub = base[base["mold_code"].astype(str) == mold_key].copy() if not base.empty else pd.DataFrame()
+            fault_cnt = max(int(fault_counts.get(mold_key, 0)), 0)
+
+            if sub.empty:
+                return ui.card(
+                    ui.card_header(f"몰드 {mold}"),
+                    ui.div(
+                        ui.div("누적 불량률", style="text-align:center; color:#6b7280; font-weight:600;"),
+                        ui.div("N/A", style="text-align:center; font-weight:800; font-size:26px; color:#9ca3af;"),
+                        style="padding:8px 0;"
+                    ),
+                    ui.div(
+                        ui.div(
+                            ui.span(f"누적 불량 {fault_cnt:,} 건"),
+                            style="text-align:center; font-size:13px; font-weight:700;"
+                        ),
+                        style="padding:4px 0 8px 0;"
+                    ),
+                    style="flex:1 1 260px; min-width:240px; background-color:#f9fafb; opacity:0.8;"
+                )
+
+            n_all = int(sub.shape[0]); d_all = int((sub["passorfail"] == 1).sum())
+            rate_all = (d_all / n_all * 100.0) if n_all > 0 else 0.0
+
+            return ui.card(
+                ui.card_header(f"몰드 {mold}"),
+                ui.div(
+                    ui.div("누적 불량률", style="text-align:center; color:#6b7280; font-weight:600;"),
+                    ui.div(f"{rate_all:,.2f}%", style="text-align:center; font-weight:800; font-size:26px; color:#1f60c4;"),
+                    style="padding:8px 0;"
+                ),
+                ui.div(
+                    ui.div(
+                        ui.span(f"누적 불량 {fault_cnt:,} 건"),
+                        style="text-align:center; font-size:13px; font-weight:700;"
+                    ),
+                    style="padding:4px 0 8px 0;"
+                ),
+                style="flex:1 1 260px; min-width:240px;"
+            )
+
+        return ui.div(
+            *[_card(m) for m in molds_to_display],
+            style="display:flex; gap:12px; justify-content:flex-start; flex-wrap:nowrap; margin:0 auto; overflow-x:auto; padding-bottom:10px;"
+        )
+
+    # ======================= (분석부터 아래는 기존 유지) =======================
+
+    # ========== (B) p-관리도 ==========  — 색상/점선 스타일 적용
     @render.ui
     @reactive.event(input.btn_apply)
     def p_chart():
-        dff = filt()
-        if dff.empty or dff["date"].notna().sum() == 0:
-            import plotly.graph_objs as go
-            fig = go.Figure(); fig.add_annotation(text="데이터/기간 없음", showarrow=False)
-            fig.update_layout(template="plotly_white", height=400)
-            return fig_html(fig, height=400)
-        return fig_html(build_p_chart(dff), height=420)
+        if input.p_mold() == "전체":
+            return ui.div("전체 선택 시 p-관리도는 비활성화됩니다. 특정 몰드를 선택하세요.", style="padding:12px; color:#6b7280;")
 
-    # SHAP
+        mold = str(input.p_mold())
+        sd = pd.to_datetime(input.p_start()); ed = pd.to_datetime(input.p_end())
+        if sd > ed: sd, ed = ed, sd
+
+        df = filt()
+        if df.empty:
+            fig = go.Figure(); fig.add_annotation(text="선택한 몰드의 데이터가 없습니다.", showarrow=False)
+            fig.update_layout(template="plotly_white", height=420)
+            return fig_html(fig, 420)
+
+        df = df.sort_values([c for c in ["date","time","count"] if c in df.columns], kind="mergesort")
+        df["_ts"] = _build_time_axis(df)
+
+        is_A = df["tryshot_signal"].eq("A")
+        idx_A = df.index[is_A]
+        roll_def = (df.loc[is_A, "passorfail"] == 1).astype(int).rolling(window=NI, min_periods=NI).sum()
+        df["p_hat"] = np.nan
+        df.loc[idx_A[roll_def.notna()], "p_hat"] = roll_def.dropna().to_numpy() / NI
+
+        ser = df.dropna(subset=["p_hat"]).copy()
+        if ser.empty:
+            fig = go.Figure(); fig.add_annotation(text="롤링 창(60샷)을 충족하는 A 시그널이 없습니다.", showarrow=False)
+            fig.update_layout(template="plotly_white", height=420)
+            return fig_html(fig, 420)
+
+        pbar = learn_pbar_map().get(mold, np.nan)
+        if not pd.notna(pbar):
+            fig = go.Figure(); fig.add_annotation(text="해당 몰드의 기준 p̄을 학습할 수 없습니다.", showarrow=False)
+            fig.update_layout(template="plotly_white", height=420)
+            return fig_html(fig, 420)
+        k3 = SIGMA_POLICY.get(mold, 3.0)
+        CL, UCL2, UCL3 = make_limits_no_lcl(pbar, NI, k2=2.0, k3=k3)
+
+        fig = go.Figure()
+        # 추세선(하늘색)
+        fig.add_trace(go.Scatter(
+            x=ser["_ts"], y=ser["p_hat"], mode="lines",
+            line=dict(color="#60A5FA", width=1.6),
+            name="p̂ trend", hoverinfo="skip"
+        ))
+        # CAUTION / CRITICAL
+        cau = ser[(ser["p_hat"] >= UCL2) & (ser["p_hat"] < UCL3)]
+        if not cau.empty:
+            fig.add_trace(go.Scatter(
+                x=cau["_ts"], y=cau["p_hat"], mode="markers",
+                marker=dict(size=7, color="#F59E0B"),
+                name="CAUTION",
+                hovertemplate="시각:%{x|%Y-%m-%d %H:%M:%S}<br>p̂:%{y:.4f}<extra></extra>"
+            ))
+        crit = ser[ser["p_hat"] >= UCL3]
+        if not crit.empty:
+            fig.add_trace(go.Scatter(
+                x=crit["_ts"], y=crit["p_hat"], mode="markers",
+                marker=dict(size=8, color="#EF4444"),
+                name="CRITICAL",
+                hovertemplate="시각:%{x|%Y-%m-%d %H:%M:%S}<br>p̂:%{y:.4f}<extra></extra>"
+            ))
+        # 기준선(점선)
+        fig.add_hline(y=CL,   line=dict(color="#1D4ED8", width=2), line_dash="dot",
+                      annotation_text=f"CL ({CL:.3f})", annotation_position="right")
+        fig.add_hline(y=UCL2, line=dict(color="#F59E0B", width=2), line_dash="dot",
+                      annotation_text=f"UCL2 (2σ, {UCL2:.3f})", annotation_position="right")
+        fig.add_hline(y=UCL3, line=dict(color="#EF4444", width=2), line_dash="dot",
+                      annotation_text=f"UCL3 ({int(k3)}σ, {UCL3:.3f})", annotation_position="right")
+        fig.update_layout(template="plotly_white", height=420,
+                          title=f"n={NI} p-관리도",
+                          hovermode="x unified", margin=dict(l=40, r=20, t=40, b=40),
+                          xaxis_title="시간", yaxis_title=f"p̂(최근 불량률)",
+                          legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+        return fig_html(fig, 420)
+
+    # ========== (C) SHAP 중요 변수 기여도 ==========  — ✅ 동료 버전 채택
+    # ========== (C) SHAP 중요 변수 기여도 ==========  — fault_analysis_dataframe_filtered.csv 기반 (최소 수정)
     @render.ui
     @reactive.event(input.btn_apply)
     def shap_plot():
-        dff = filt()
-        fig = build_shap_bar(dff)
-        if fig is None:
-            return ui.div("SHAP 컬럼이 없어 표시할 수 없습니다.", style="color:#6b7280; padding:12px;")
-        return fig_html(fig, height=420)
+        # 전체 선택 시 비활성
+        if input.p_mold() in (None, "전체"):
+            return ui.div(
+                "전체 선택 시 SHAP 중요변수 기여도는 비활성화됩니다. 특정 몰드를 선택하세요.",
+                style="color:#6b7280; padding:12px; height: 420px; display:flex; align-items:center; justify-content:center;"
+            )
 
-    # 불량 샘플 로그
-    @output
-    @render.table
+        # 불량 샘플 로그(동료 코드의 데이터 경로) 사용 — 여기서 fault_analysis_dataframe_filtered.csv가 로드됨
+        dff = fault_filt()
+        if dff.empty or ("메시지" in dff.columns and len(dff.columns) == 1):
+            return ui.div(
+                "선택한 몰드/기간에 SHAP 데이터가 없습니다.",
+                style="color:#6b7280; padding:12px; height: 420px; display:flex; align-items:center; justify-content:center;"
+            )
+
+        # 1) CSV 내 모든 *_shap 컬럼 자동 탐지
+        shap_cols = [c for c in dff.columns if isinstance(c, str) and c.lower().endswith("_shap")]
+        if not shap_cols:
+            return ui.div(
+                "데이터에 *_shap 컬럼이 없어 SHAP 중요도를 계산할 수 없습니다.",
+                style="color:#6b7280; padding:12px; height: 420px; display:flex; align-items:center; justify-content:center;"
+            )
+
+        # 2) 전역 중요도: 각 변수 SHAP의 |값| 평균
+        df_shap = dff[shap_cols].apply(pd.to_numeric, errors="coerce")
+        imp = df_shap.abs().mean(axis=0, skipna=True)  # Series(index=*_shap, value=abs-mean)
+
+        # 3) 변수명 정리 및 한글 라벨 매핑
+        def base_name(col):
+            # 끝의 "_shap" 제거
+            name = col[:-5] if col.lower().endswith("_shap") else col
+            # var_labels.csv 매핑 (소문자 키도 대응)
+            return var_map.get(name, var_map.get(name.lower(), name))
+
+        imp_df = (
+            imp.rename(index=base_name)
+            .reset_index()
+            .rename(columns={"index": "변수", 0: "중요도"})
+            .sort_values("중요도", ascending=False)
+        )
+
+        # 4) 상위 15개만 시각화 (수량은 필요 시 조절 가능)
+        topn = imp_df.head(15).reset_index(drop=True)
+        values = topn["중요도"].astype(float)
+        if not values.empty and values.max() != values.min():
+            marker_style = dict(
+                color=values.tolist(),
+                colorscale=[(0.0, "#BFDBFE"), (1.0, "#1D4ED8")],
+                showscale=False
+            )
+        else:
+            marker_style = dict(color="#1D4ED8")
+
+        # 5) Plotly 바차트 (가독성 위해 가로막대)
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=topn["중요도"].values.tolist(),
+            y=topn["변수"].values.tolist(),
+            orientation="h",
+            hovertemplate="%{y}<br>평균 |SHAP|: %{x:.5f}<extra></extra>",
+            marker=marker_style
+        ))
+        fig.update_layout(
+            template="plotly_white",
+            height=420,
+            margin=dict(l=120, r=20, t=30, b=40),
+            title="SHAP 중요 변수 기여도 (평균 |SHAP|)",
+            xaxis_title="평균 |SHAP|",
+            yaxis_title="변수",
+            yaxis=dict(
+                categoryorder="array",
+                categoryarray=topn["변수"].tolist(),
+                autorange="reversed"
+            ),
+            showlegend=False
+        )
+
+        return fig_html(fig, 420)
+
+
+    # ========== (D) 실제 불량 샘플 로그 ==========  — 기존 유지
+    def _ko_var(text: str) -> str:
+        if not isinstance(text, str): return text
+        s = text.strip()
+        if ":" in s:
+            h, t = s.split(":", 1)
+            return f"{var_map.get(h.strip(), h.strip())}: {t.strip()}"
+        return var_map.get(s, s)
+
+    @reactive.calc
+    @reactive.event(input.btn_apply)
+    def fault_filt():
+        if not input.p_start() or not input.p_end():
+            return pd.DataFrame({"메시지": ["기간을 선택하세요."]})
+        df = load_fault_samples().copy()
+        if df.empty:
+            return pd.DataFrame({"메시지": ["불량 샘플 CSV가 비어있습니다."]})
+        sd = pd.to_datetime(input.p_start()); ed = pd.to_datetime(input.p_end())
+        if sd > ed: sd, ed = ed, sd
+        df["date"] = pd.to_datetime(df.get("date"), errors="coerce")
+        df = df[(df["date"] >= sd) & (df["date"] <= ed)]
+        if input.p_mold() not in (None, "전체"):
+            df["mold_code"] = df.get("mold_code", "").astype(str).str.strip()
+            df = df[df["mold_code"] == str(input.p_mold())]
+        return df.sort_values("date").reset_index(drop=True)
+
+    @render.ui
     @reactive.event(input.btn_apply)
     def detect_log():
-        return build_log_table(filt())
+        df = fault_filt()
+        if df.empty or ("메시지" in df.columns and len(df.columns) == 1):
+            return ui.HTML(f'<div style="max-height:280px; overflow:auto">{pd.DataFrame(df).to_html(index=False)}</div>')
 
-    # 리포트 다운로드(CSV)
-    @render.download(filename=lambda: f"report_{input.p_mold() or 'ALL'}_{input.p_date() or 'NA'}.csv")
+        def pick(cands):
+            low = {c.lower(): c for c in df.columns}
+            for n in cands:
+                if n.lower() in low: return low[n.lower()]
+            return None
+
+        k_date  = pick(["date","일시","datetime","timestamp","time"])
+        k_mold  = pick(["mold_code","mold","몰드"])
+        k_count = pick(["count","순번","index","shot_no","shotno"])
+        k_rfp   = pick(["rf_prediction","예측불량도","rf_pred"])
+        k_rfpb  = pick(["rf_probability","예측불량확률","prob","probability"])
+        k_s1    = pick(["shap1"]); k_s2 = pick(["shap2"])
+        k_s1st  = pick(["shap1_status","shap1변수상태"])
+        k_s2st  = pick(["shap2_status","shap2변수상태"])
+        k_cut   = pick(["cutoff","이탈변수"])
+        k_if    = pick(["if_prediction","이상탐지"])
+        k_ifas  = pick(["if_anomaly_score","anomalyscore","anomaly_score"])
+
+        def ensure(src): return df[src] if src is not None else pd.Series([None]*len(df))
+        out = pd.DataFrame({
+            "일시": pd.to_datetime(ensure(k_date), errors="coerce"),
+            "몰드": ensure(k_mold).astype(str) if k_mold else pd.Series([None]*len(df)),
+            "순번": pd.to_numeric(ensure(k_count), errors="coerce"),
+            "예측불량도": pd.to_numeric(ensure(k_rfp),  errors="coerce"),
+            "예측불량확률": pd.to_numeric(ensure(k_rfpb), errors="coerce"),
+            "shap1": ensure(k_s1), "shap2": ensure(k_s2),
+            "shap1변수상태": ensure(k_s1st), "shap2변수상태": ensure(k_s2st),
+            "이탈변수": ensure(k_cut),
+            "이상탐지": ensure(k_if),
+            "AnomalyScore": pd.to_numeric(ensure(k_ifas), errors="coerce"),
+        })
+
+        for c in ["shap1","shap2"]:
+            if c in out: out[c] = out[c].map(_ko_var)
+        for c in ["shap1변수상태","shap2변수상태"]:
+            if c in out: out[c] = out[c].map(_norm_status)
+
+        def fmt_cut(cell):
+            if cell is None or (isinstance(cell, float) and pd.isna(cell)): return None
+            try:
+                d = cell if isinstance(cell, dict) else (ast.literal_eval(str(cell)) if str(cell).strip() else None)
+            except Exception:
+                d = None
+            if not isinstance(d, dict): return str(cell)
+            items = [f"{var_map.get(str(k).strip(), str(k).strip())}: {_norm_status(v)}" for k, v in d.items()]
+            return "<br>".join(items)
+
+        if "이탈변수" in out: out["이탈변수"] = out["이탈변수"].map(fmt_cut)
+        if out["일시"].notna().any(): out = out.sort_values("일시").reset_index(drop=True)
+        if "예측불량확률" in out: out["예측불량확률"] = out["예측불량확률"].round(4)
+        if "AnomalyScore" in out:  out["AnomalyScore"]  = out["AnomalyScore"].round(3)
+
+        def map_if(x):
+            s = str(x).strip().lower()
+            if s in {"1","true","yes","y","anomaly","abnormal","이상"}: return "이상"
+            if s in {"0","false","no","n","normal","정상"}:            return "정상"
+            return None
+        if "이상탐지" in out: out["이상탐지"] = out["이상탐지"].map(map_if)
+
+        html = out.to_html(index=False, border=0, classes="tbl-sample-log", escape=False)
+        html = html.replace(">\n<thead", ">\n<caption>실제 불량 샘플 로그</caption>\n<thead", 1)
+        return ui.HTML(f"""
+        <style>
+        .tbl-wrap {{ max-height:280px; overflow-y:auto; border:1px solid #e5e7eb; border-radius:6px; }}
+        table.tbl-sample-log {{ width:100%; table-layout:fixed; border-collapse:collapse; font-size:13px; }}
+        table.tbl-sample-log caption {{ caption-side:top; text-align:center; font-weight:700; padding:6px 0 4px; }}
+        table.tbl-sample-log thead th {{ text-align:left; position:sticky; top:0; background:#fff; z-index:1; border-bottom:1px solid #e5e7eb; padding:8px 10px; font-weight:700; }}
+        table.tbl-sample-log tbody td {{ text-align:left; vertical-align:top; padding:8px 10px; border-bottom:1px solid #f1f5f9; word-break:break-word; font-variant-numeric:tabular-nums; }}
+        </style>
+        <div class="tbl-wrap">{html}</div>
+        """)
+
+    # ✅ CSV 다운로드 (샘플 로그 그대로 저장)
+    @render.download(filename=lambda: f"sample_log_{input.p_mold() or 'ALL'}_{input.p_start() or 'NA'}_{input.p_end() or 'NA'}.csv")
     def btn_report():
-        log = build_log_table(filt())
-        yield report_csv_bytes(log)
+        df = fault_filt()
+        yield df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+
+    # ========== (E) 변수별 관계분석(TOP5) — Score 유지 ==========
+    @reactive.calc
+    @reactive.event(input.btn_apply)
+    def var_relation_df():
+        df = fault_filt()
+        if df.empty or ("메시지" in df.columns and len(df.columns) == 1):
+            return pd.DataFrame(columns=["변수","상태","shap","high","low","Score","rank"])
+
+        def pick(cands):
+            low = {c.lower(): c for c in df.columns}
+            for n in cands:
+                if n.lower() in low: return low[n.lower()]
+            return None
+
+        k_cut = pick(["cutoff","이탈변수"])
+        k_s1, k_s2 = pick(["shap1"]), pick(["shap2"])
+        k_s1st = pick(["shap1_status","shap1변수상태"])
+        k_s2st = pick(["shap2_status","shap2변수상태"])
+
+        def nstat(v):
+            t = str(v).strip().lower()
+            if t in {"하한","하한이탈","low","lower","lo"}: return "low"
+            if t in {"상한","상한이탈","high","upper","hi"}: return "high"
+            return None
+
+        cutoff, shap = {}, {}
+        if k_cut:
+            for cell in df[k_cut]:
+                if cell is None or (isinstance(cell,float) and pd.isna(cell)): continue
+                try:
+                    d = cell if isinstance(cell, dict) else (ast.literal_eval(str(cell)) if str(cell).strip() else None)
+                except Exception:
+                    d = None
+                if not isinstance(d, dict): continue
+                for k, v in d.items():
+                    st = nstat(v)
+                    if st not in {"low","high"}: continue
+                    vko = var_map.get(str(k).strip(), str(k).strip())
+                    cutoff[(vko, st)] = cutoff.get((vko, st), 0) + 1
+
+        def add_shap(name_val, status_val):
+            if not isinstance(name_val, str) or status_val is None: return
+            var_name = name_val.split(":",1)[0].strip()
+            vko = var_map.get(var_name, var_name)
+            st  = nstat(status_val)
+            if st not in {"low","high"}: return
+            shap[(vko, st)] = shap.get((vko, st), 0) + 1
+
+        for _, r in df.iterrows():
+            if k_s1: add_shap(r.get(k_s1), r.get(k_s1st))
+            if k_s2: add_shap(r.get(k_s2), r.get(k_s2st))
+
+        vars_all = set(v for v,_ in cutoff.keys()) | set(v for v,_ in shap.keys())
+        rows = []
+        for v in vars_all:
+            for st in ["high","low"]:
+                s = shap.get((v,st), 0)
+                h = cutoff.get((v,"high"), 0) if st == "high" else 0
+                l = cutoff.get((v,"low"),  0) if st == "low"  else 0
+                rows.append({"변수": v, "상태": st, "shap": s, "high": h, "low": l, "Score": s + h + l})
+
+        out = pd.DataFrame(rows)
+        if out.empty:
+            return pd.DataFrame(columns=["변수","상태","shap","high","low","Score","rank"])
+        out = out.sort_values(["Score","shap","high","low"], ascending=[False,False,False,False]).reset_index(drop=True)
+        out["rank"] = out.index + 1
+        return out.head(5)
+
+    @render.ui
+    @reactive.event(input.btn_apply)
+    def var_rel_table():
+        df_top = var_relation_df()
+        if df_top.empty:
+            return ui.HTML('<div style="padding:8px;color:#6b7280;">데이터가 없습니다.</div>')
+
+        pretty = df_top[["rank","변수","Score","상태","shap","high","low"]].rename(columns={
+            "rank":"Rank","변수":"변수","Score":"원인 분석 횟수","상태":"상태","shAP":"SHAP횟수","high":"HIGH횟수","low":"LOW횟수"
+        })
+        # 오타 방지 재정의
+        pretty = df_top[["rank","변수","Score","상태","shap","high","low"]].rename(columns={
+            "rank":"Rank","변수":"변수","Score":"원인 분석 횟수","상태":"상태","shap":"SHAP횟수","high":"HIGH횟수","low":"LOW횟수"
+        })
+
+        html = pretty.to_html(index=False, classes="var-rel-table", border=0)
+        return ui.HTML(f"""
+        <style>
+        table.var-rel-table {{
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+        }}
+        table.var-rel-table thead th {{
+            text-align: left;
+            border-bottom: 1px solid #e5e7eb;
+            padding: 8px 10px;
+            font-weight: 700;
+        }}
+        table.var-rel-table tbody td {{
+            text-align: left;
+            padding: 10px 10px;
+            border-bottom: 1px solid #f1f5f9;
+            font-variant-numeric: tabular-nums;
+        }}
+        td.rank-cell::before {{
+            content: attr(data-rank);
+            display: inline-block;
+            min-width: 36px;
+            text-align: center;
+            background: #111827;
+            color: #fff;
+            border-radius: 16px;
+            padding: 2px 10px;
+            font-weight: 800;
+            letter-spacing: 0.5px;
+        }}
+        td.rank-cell[data-rank="1"]::before {{ background:#D4AF37; color:#111; }}
+        td.rank-cell[data-rank="2"]::before {{ background:#C0C0C0; color:#111; }}
+        td.rank-cell[data-rank="3"]::before {{ background:#CD7F32; color:#111; }}
+        td.state-cell[data-state="low"]  {{ color:#2E86C1; font-weight:700; }}
+        td.state-cell[data-state="high"] {{ color:#E74C3C; font-weight:700; }}
+        td.score-cell {{ font-weight: 900; font-size: 18px; letter-spacing: 0.2px; }}
+        </style>
+        {html}
+        <script>
+        (function(){{
+            var tbl = document.querySelector('table.var-rel-table'); if(!tbl) return;
+            var rows = tbl.tBodies[0]?.rows || [];
+            Array.from(rows).forEach(function(row){{
+                var rankTd = row.cells[0];
+                if(rankTd){{
+                    var rk=(rankTd.innerText||'').trim();
+                    rankTd.setAttribute('data-rank',rk);
+                    rankTd.classList.add('rank-cell');
+                    rankTd.innerText='';
+                }}
+                var scoreTd = row.cells[2];
+                if(scoreTd){{
+                    scoreTd.classList.add('score-cell');
+                }}
+                var stateTd = row.cells[3];
+                if(stateTd){{
+                    var st=(stateTd.innerText||'').trim().toLowerCase();
+                    stateTd.classList.add('state-cell');
+                    stateTd.setAttribute('data-state',st);
+                }}
+            }});
+        }})();
+        </script>
+        """)
+
+    @render.ui
+    @reactive.event(input.btn_apply)
+    def var_rel_bar():
+        df_top = var_relation_df()
+        if df_top.empty:
+            fig = go.Figure(); fig.add_annotation(text="데이터 없음", showarrow=False)
+            fig.update_layout(template="plotly_white", height=340)
+            return fig_html(fig, 340)
+
+        # X축: "변수명(단위 제거)\n(LOW/HIGH)" 형식
+        def norm_label(vname: str):
+            s = str(vname)
+            return s.split("(")[0].strip()
+
+        x = df_top.apply(lambda r: f"{norm_label(r['변수'])}\n({'HIGH' if r['상태']=='high' else 'LOW'})", axis=1).tolist()
+        y = df_top["Score"].tolist()
+        colors = ["#E74C3C" if s == "high" else "#2E86C1" for s in df_top["상태"]]
+
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=x, y=y, marker_color=colors,
+            hovertemplate="%{x}<br>원인 분석 횟수: %{y}<extra></extra>",
+            name=""
+        ))
+        # 색상 범례(LOW/HIGH)
+        fig.add_trace(go.Scatter(x=[None], y=[None], mode="markers",
+                                 marker=dict(size=10, color="#2E86C1"), name="LOW"))
+        fig.add_trace(go.Scatter(x=[None], y=[None], mode="markers",
+                                 marker=dict(size=10, color="#E74C3C"), name="HIGH"))
+
+        fig.update_layout(template="plotly_white", height=340,
+                          margin=dict(l=40, r=20, t=30, b=70),
+                          xaxis_title="변수(상태)",
+                          yaxis_title="원인 분석 횟수",
+                          legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                          annotations=[dict(
+                              x=0, y=-0.22, xref="paper", yref="paper",
+                              text="원인 기여도 = SHAP횟수 + HIGH횟수 + LOW횟수",
+                              showarrow=False, align="left", font=dict(color="#6b7280")
+                          )])
+        return fig_html(fig, 340)
