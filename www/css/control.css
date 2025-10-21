@@ -1,11 +1,14 @@
+/* 기본 폰트 및 배경 */
 * {
   font-family: "Noto Sans KR", sans-serif;
 }
+
 body {
   background-color: #f5f7fa;
   padding: 1rem 0;
 }
 
+/* 카드 레이아웃 */
 .card {
   border: 1px solid #e5e7eb;
   border-radius: 8px;
@@ -13,6 +16,7 @@ body {
   background: white;
   margin-bottom: 1rem;
 }
+
 .card-header {
   background-color: #f9fafb;
   border-bottom: 1px solid #e5e7eb;
@@ -30,6 +34,7 @@ body {
   margin: 1rem 0;
 }
 
+/* 단일 변수 카드 */
 .var-card {
   background: white;
   border: 2px solid #e5e7eb;
@@ -59,6 +64,7 @@ body {
   background: #fffbeb;
 }
 
+/* 카드 헤더 */
 .var-card-header {
   display: flex;
   justify-content: space-between;
@@ -84,10 +90,12 @@ body {
 .var-status.alert {
   background: #ef4444;
 }
+
 .var-status.warning {
   background: #f59e0b;
 }
 
+/* 메인값 */
 .var-value {
   font-size: 2rem;
   font-weight: 700;
@@ -95,13 +103,16 @@ body {
   text-align: center;
   margin: 0.5rem 0;
 }
+
 .var-value.alert {
   color: #ef4444;
 }
+
 .var-value.warning {
   color: #f59e0b;
 }
 
+/* 카드 하단 통계 */
 .var-stats {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -116,42 +127,52 @@ body {
 .stat-item {
   text-align: center;
 }
+
 .stat-label {
   display: block;
   margin-bottom: 0.2rem;
   font-size: 0.65rem;
 }
+
 .stat-value {
   font-weight: 600;
   color: #1f2937;
   font-size: 0.75rem;
 }
 
+/* 추세 표시 */
 .trend-indicator {
   font-size: 1.2rem;
   display: inline-block;
   margin-left: 0.3rem;
 }
+
 .trend-up {
   color: #ef4444;
 }
+
 .trend-down {
   color: #10b981;
 }
+
 .trend-stable {
   color: #6b7280;
 }
 
+/* 스크롤 테이블 */
 .scroll-table {
   max-height: 250px;
   overflow-y: auto;
 }
+
+/* 제목 스타일 */
 h3 {
   color: #1f2937;
   font-weight: 700;
   margin-bottom: 1rem;
   font-size: 1.5rem;
 }
+
 h5 {
   color: #374151;
   font-weight: 600;
@@ -159,10 +180,11 @@ h5 {
   font-size: 1rem;
 }
 
-/* 모달 스타일 */
+/* 모달 */
 .modal-content {
   border-radius: 12px;
 }
+
 .modal-header {
   background-color: #f9fafb;
   border-bottom: 1px solid #e5e7eb;
