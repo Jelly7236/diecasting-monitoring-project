@@ -21,13 +21,14 @@ def sticky_toolbar():
         ui.card(
             ui.div(
                 # 날짜: 시작/끝 + 최신일자 버튼
-                ui.input_date("p_start", "시작일", value=None),
-                ui.input_date("p_end",   "종료일", value=None),
+                ui.input_date("p_start", "시작일", value=None, min="2019-03-01", max="2019-03-12"),
+                ui.input_date("p_end",   "종료일", value=None, min="2019-03-01", max="2019-03-12"),
                 # 몰드 셀렉트(서버에서 렌더)
                 ui.output_ui("p_mold_ui"),
                 # 동작 버튼
                 ui.input_action_button("btn_update_date", "최신 일자"),
                 ui.input_action_button("btn_apply", "적용", class_="btn-primary"),
+                ui.input_action_button("btn_pdf", "보고서(PDF) 다운로드"),
                 style="display:flex; gap:12px; align-items:end; flex-wrap:wrap;"
             ),
             ui.div(
@@ -41,12 +42,67 @@ def sticky_toolbar():
 
 # ============================== 페이지 UI ===============================
 def page_ui():
-    return ui.page_fluid(
+    pdf_support = [
+        ui.tags.script(src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"),
+        ui.tags.script(src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"),
+        ui.tags.script("""
+(function(){
+    function bindPdfButton(){
+        var btn = document.getElementById('btn_pdf');
+        if(!btn || btn.dataset.pdfBound === '1'){
+            return;
+        }
+        btn.dataset.pdfBound = '1';
+        btn.addEventListener('click', function(){
+            var target = document.getElementById('cause-tab-root') || document.body;
+            if(!window.html2canvas || !window.jspdf){
+                alert('PDF 도구 로드 중입니다. 잠시 후 다시 시도하세요.');
+                return;
+            }
+            var originalText = btn.innerText;
+            btn.disabled = true;
+            btn.innerText = 'PDF 생성 중...';
+            html2canvas(target, {background:'#ffffff', scale:2, scrollY:-window.scrollY}).then(function(canvas){
+                var imgData = canvas.toDataURL('image/png');
+                var pdf = new window.jspdf.jsPDF('p','pt','a4');
+                var pageWidth = pdf.internal.pageSize.getWidth();
+                var pageHeight = pdf.internal.pageSize.getHeight();
+                var imgWidth = pageWidth;
+                var imgHeight = canvas.height * imgWidth / canvas.width;
+                var heightLeft = imgHeight - pageHeight;
+                pdf.addImage(imgData, 'PNG', 0, 0, imgWidth, imgHeight);
+                while(heightLeft > 0){
+                    pdf.addPage();
+                    pdf.addImage(imgData, 'PNG', 0, -heightLeft, imgWidth, imgHeight);
+                    heightLeft -= pageHeight;
+                }
+                pdf.save('불량원인_보고서.pdf');
+            }).catch(function(err){
+                console.error(err);
+                alert('PDF 생성 중 오류가 발생했습니다.');
+            }).finally(function(){
+                btn.disabled = false;
+                btn.innerText = originalText;
+            });
+        });
+    }
+    if(document.readyState !== 'loading'){
+        bindPdfButton();
+    } else {
+        document.addEventListener('DOMContentLoaded', bindPdfButton);
+    }
+    var observer = new MutationObserver(bindPdfButton);
+    observer.observe(document.body, {childList:true, subtree:true});
+})();
+        """)
+    ]
+
+    content = [
         # 타이틀
         ui.div(
             ui.h3("불량 원인 분석"),
             ui.p(
-                "상단: 몰드별 누적 카드 → 분석 설정 → p-관리도 & SHAP → 변수별 관계분석 → 실제 불량 샘플 로그",
+                "상단: 몰드별 누적 현황 카드 → 분석 설정 → p-관리도 & SHAP → 변수별 관계분석 → 실제 불량 샘플 로그",
                 style="color:#6b7280; margin-top:4px;",
             ),
             style=MAXW,
@@ -55,7 +111,7 @@ def page_ui():
         ui.hr(),
 
         # 1) 몰드별 누적 카드 (기간 반영)
-        section("몰드별 누적 현황", "선택한 기간 기준 누적 불량률 / 누적 이상 / 누적 관리도 이탈"),
+        section("몰드별 누적 현황", "선택한 기간 기준 누적 불량률 / 누적 불량 건수"),
         ui.div(
             ui.output_ui("mold_cards"),   # 서버(server_cause)에서 기간 반영 카드 생성
             style=ROW,
@@ -64,16 +120,16 @@ def page_ui():
         ui.hr(),
 
         # 2) 분석 설정(스티키)
-        section("분석 설정", "시작일/종료일과 몰드를 선택 후 [적용]을 눌러 갱신"),
+        section("분석 설정", "시작일 종료일과 몰드를 선택 후 [적용]을 눌러 갱신 / 최신 일자를 눌러 현재 시간까지 갱신"),
         sticky_toolbar(),
 
         ui.hr(style=MAXW),
 
         # 3) 분석: p-관리도 + SHAP
-        section("분석", "좌: p-관리도 / 우: SHAP 중요변수 기여도 (내림차순 · 길수록 진한 색상)"),
+        section("분석", "좌: p-관리도 / 우: SHAP 중요변수 기여도"),
         ui.div(
             ui.card(ui.card_header("p-관리도"), ui.output_ui("p_chart"), style=MCARD),
-            ui.card(ui.card_header("SHAP 중요변수 기여도 (내림차순)"), ui.output_ui("shap_plot"), style=RIGHT),
+            ui.card(ui.card_header("SHAP 중요변수 기여도"), ui.output_ui("shap_plot"), style=RIGHT),
             style=ROW,
         ),
 
@@ -82,7 +138,7 @@ def page_ui():
         # 4) 변수별 관계분석 (표 + 그래프)
         section(
             "변수별 관계분석",
-            "이탈변수/SHAP 기준 ‘변수+상태’ 사건횟수 Top 5 — (원인 분석 횟수 = SHAP횟수 + HIGH횟수 + LOW횟수)"
+            "이탈변수/SHAP 기준 ‘변수+상태’ 기여횟수 Top 5 — (원인 기여 횟수 = SHAP횟수 + HIGH횟수 + LOW횟수)"
         ),
         ui.div(
             ui.card(ui.card_header("순위표 · Top 5"), ui.output_ui("var_rel_table"), style=MCARD),
@@ -104,4 +160,9 @@ def page_ui():
         ),
 
         ui.hr(),
+    ]
+
+    return ui.page_fluid(
+        *pdf_support,
+        ui.div(*content, id="cause-tab-root")
     )
