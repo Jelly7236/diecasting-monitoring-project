@@ -1,7 +1,7 @@
-# modules/page_operations.py
 from shiny import ui, render, reactive
 import pandas as pd
 import numpy as np
+import random  # ✅ 관리도 이탈 랜덤 트리거용
 from shared import streaming_df, iso_models, iso_features, current_state, prediction_state
 from utils.real_time_streamer import RealTimeStreamer
 from utils.kpi_metrics import calculate_realtime_metrics
@@ -16,14 +16,31 @@ SENSOR_COLS = [c for c in streaming_df.select_dtypes(include=np.number).columns 
 MOLD_CODES = streaming_df["mold_code"].unique().tolist()
 COLUMNS = ["datetime", "mold_code", "passorfail", "working", "tryshot_signal", "count"] + SENSOR_COLS
 
-# 연속 경보 판단 기준
+# 센서 그래프: 최근 N개만 표시
+PLOT_WINDOW = 20
+
+# 연속 경보 판단
 N_CONSECUTIVE = 3
 
-# 임계값(간단 예시)
-THRESHOLDS = {
-    "oee_min": 0.65,          # OEE 65% 미만
-    "good_rate_min": 95.0,    # 양품률 95% 미만
-    "cycle_time_max": 120.0,  # 사이클타임 120초 초과
+# KPI계열 임계 (유지)
+THRESHOLDS = {"oee_min": 0.65, "good_rate_min": 95.0, "cycle_time_max": 120.0}
+
+# ✅ 공정 변수 임계값 (사용자 지정)
+CUTOFFS = {
+    "low_section_speed": {"low": 100, "high": 114},
+    "high_section_speed": {"low": 100},
+    "coolant_temp": {"low": 20},
+    "biscuit_thickness": {"low": 42, "high": 56},
+    "sleeve_temperature": {"low": 128},
+    "cast_pressure": {"low": 314},
+    "upper_mold_temp1": {"low": 103},
+    "upper_mold_temp2": {"low": 80},
+    "lower_mold_temp1": {"low": 92},
+    "lower_mold_temp2": {"low": 71},
+}
+# 데이터 컬럼명 별칭
+CUTOFF_ALIASES = {
+    "coolant_temp": ["coolant_temp", "Coolant_temperature"],
 }
 
 # -----------------------------
@@ -37,7 +54,6 @@ def ui_operations():
         ),
         ui.tags.link(rel="stylesheet", href="css/operations.css"),
 
-        # 헤더
         ui.div(
             ui.h2("실시간 공정 모니터링 대시보드", class_="title"),
             ui.div(
@@ -48,7 +64,6 @@ def ui_operations():
             class_="header",
         ),
 
-        # 1단: 센서(좌) + KPI(우)
         ui.div(
             ui.layout_columns(
                 ui.card(
@@ -94,17 +109,14 @@ def ui_operations():
 
         ui.hr(class_="divider"),
 
-        # 상태 요약(불량예측/이상탐지/관리도/임계) — 단일 출력(그리기 전용)
         ui.h4("상태 요약", class_="section-title"),
         ui.output_ui("status_overview"),
 
-        # 로그(최근 5개)
         ui.card(ui.card_header("실시간 알림 메시지 (최근 5개)"),
                 ui.output_table("event_feed"), class_="panel"),
 
         ui.hr(class_="divider"),
 
-        # 몰드별 5분할 그리드
         ui.h4("몰드별 생산 현황", class_="section-title"),
         ui.div(
             *[
@@ -120,7 +132,6 @@ def ui_operations():
 
         ui.hr(class_="divider"),
 
-        # 분석
         ui.h4("생산 분석", class_="section-title"),
         ui.layout_columns(
             ui.card(ui.card_header("⚙️ OEE 구성 요소"), ui.output_plot("oee_chart", height="300px"), class_="panel"),
@@ -130,7 +141,6 @@ def ui_operations():
 
         ui.hr(class_="divider"),
 
-        # 로그 2종
         ui.layout_columns(
             ui.card(ui.card_header("🗒 최근 데이터 로그"), ui.output_table("recent_data"), class_="panel"),
             ui.card(ui.card_header("⚠️ 최근 이상치 로그"), ui.output_table("recent_abnormal"), class_="panel"),
@@ -141,7 +151,6 @@ def ui_operations():
     )
 
 
-# ---- KPI 카드 컴포넌트 ----
 def _kpi_card(icon, label, value_output, accent="indigo"):
     return ui.div(
         ui.div(class_=f"accent accent--{accent}"),
@@ -171,11 +180,21 @@ def server_operations(input, output, session):
     prediction_data = reactive.value(pd.DataFrame())
     is_streaming = reactive.value(False)
 
-    # 연속 카운터(팝업 없음·카드 색만 변경)
     anomaly_streak = reactive.value(0)
     defect_streak = reactive.value(0)
 
-    # ✅ 상태 요약 사전 계산 값을 담아두는 컨테이너
+    def _empty_metrics():
+        return {
+            "abnormal": 0, "good_rate": 0.0, "prod_count": 0, "cycle_time": 0.0,
+            "oee": 0.0, "availability": 0.0, "performance": 0.0, "quality": 0.0,
+            "molds": {}
+        }
+    metrics_state = reactive.value(_empty_metrics())
+
+    # ✅ 관리도 이탈 “랜덤 트리거” 상태 (10개마다)
+    # timer: 남은 유지 틱 수, mold: 표시할 몰드, last_prod: 마지막 생산량
+    spc_sim = reactive.value({"timer": 0, "mold": "-", "last_prod": 0})
+
     overview_state = reactive.value({
         "pred_active": False, "pred_prob": "",
         "anom_active": False, "anom_score": "",
@@ -200,6 +219,8 @@ def server_operations(input, output, session):
         current_data.set(pd.DataFrame()); detected_data.set(pd.DataFrame()); prediction_data.set(pd.DataFrame())
         current_state.set(pd.DataFrame()); prediction_state.set(pd.DataFrame())
         anomaly_streak.set(0); defect_streak.set(0)
+        metrics_state.set(_empty_metrics())
+        spc_sim.set({"timer": 0, "mold": "-", "last_prod": 0})
         overview_state.set({
             "pred_active": False, "pred_prob": "",
             "anom_active": False, "anom_score": "",
@@ -210,7 +231,7 @@ def server_operations(input, output, session):
     # 실시간 루프
     @reactive.effect
     def _stream_loop():
-        reactive.invalidate_later(2)  # 갱신 주기(초) — 필요시 조정
+        reactive.invalidate_later(2)
         if is_streaming():
             s = streamer()
             new_batch = s.get_next_batch(1)
@@ -218,6 +239,20 @@ def server_operations(input, output, session):
                 df_now = s.get_current_data()
                 current_data.set(df_now)
                 current_state.set(df_now)
+
+    # ---- 그래프 뷰: 최근 20개 + 실제 datetime 유지 ----
+    @reactive.calc
+    def plot_view():
+        df = current_data()
+        if df is None or df.empty:
+            return pd.DataFrame()
+        df = df.tail(PLOT_WINDOW).copy()
+        if "datetime" in df.columns:
+            try:
+                df["datetime"] = pd.to_datetime(df["datetime"])
+            except Exception:
+                pass
+        return df.reset_index(drop=True)
 
     # 스트리밍 상태칩
     @output
@@ -227,15 +262,14 @@ def server_operations(input, output, session):
         color = "#10b981" if is_streaming() else "#ef4444"
         return ui.div(text, class_="chip", style=f"background:{color}; color:white;")
 
-    # 작동/시험샷 배지
+    # 배지
     def _is_running(v):
         if pd.isna(v): return False
         s = str(v).strip().lower()
         return s in {"1", "true", "가동", "작동", "run", "running", "yes"}
-
     def _is_tryshot(v):
         if pd.isna(v): return False
-        return str(v).strip().upper() == "D"  # D=시험샷, A=정상
+        return str(v).strip().upper() == "D"
 
     @output
     @render.ui
@@ -255,9 +289,7 @@ def server_operations(input, output, session):
     def detect_anomalies(df):
         if df.empty or not iso_models or not iso_features:
             return df
-        df = df.copy()
-        df["anomaly"] = 0
-        df["anomaly_score"] = np.nan
+        df = df.copy(); df["anomaly"] = 0; df["anomaly_score"] = np.nan
         for mold, group in df.groupby("mold_code"):
             model = iso_models.get(str(mold))
             if model is None: continue
@@ -266,46 +298,65 @@ def server_operations(input, output, session):
                 X[c] = 0
             X = X[iso_features]
             try:
-                preds = model.predict(X)
-                scores = model.decision_function(X)
+                preds = model.predict(X); scores = model.decision_function(X)
                 df.loc[group.index, "anomaly"] = preds
                 df.loc[group.index, "anomaly_score"] = scores
             except Exception as e:
                 print(f"[WARN] anomaly detection failed for mold {mold}: {e}")
         return df
 
-    # KPI 계산 + 연속 이상치 카운트(팝업 X)
-    @reactive.calc
-    def metrics():
+    # KPI 계산 + 관리도 이탈 랜덤 트리거 업데이트
+    @reactive.effect
+    @reactive.event(current_data)
+    def _update_metrics_state():
         df = current_data()
         if df.empty:
             detected_data.set(pd.DataFrame())
-            return {"abnormal": 0, "good_rate": 0, "prod_count": 0, "cycle_time": 0,
-                    "oee": 0, "availability": 0, "performance": 0, "quality": 0, "molds": {}}
-        df_detected = detect_anomalies(df)
-        detected_data.set(df_detected)
-        abnormal_count = (df_detected["anomaly"] == -1).sum()
+            metrics_state.set(_empty_metrics()); anomaly_streak.set(0)
+            # 타이머도 서서히 감소
+            if spc_sim()["timer"] > 0:
+                spc_sim.set({**spc_sim(), "timer": spc_sim()["timer"] - 1})
+            return
+
+        df_detected = detect_anomalies(df); detected_data.set(df_detected)
+        abnormal_count = int((df_detected.get("anomaly", pd.Series(dtype=int)) == -1).sum())
+
         base = calculate_realtime_metrics(df_detected, MOLD_CODES)
-        for k in ["availability", "performance", "quality"]:
+        for k in ["availability", "performance", "quality", "good_rate", "cycle_time", "oee"]:
             base.setdefault(k, 0)
-        base["abnormal"] = abnormal_count
+        base.setdefault("prod_count", 0); base.setdefault("molds", {}); base["abnormal"] = abnormal_count
+        metrics_state.set(base)
+        anomaly_streak.set(anomaly_streak() + 1 if abnormal_count > 0 else 0)
 
-        # 연속 이상치 카운트만 관리
-        if abnormal_count > 0:
-            anomaly_streak.set(anomaly_streak() + 1)
+        # ✅ 생산량 10개마다 관리도 이탈 “랜덤 발생 + 랜덤 몰드 지정”
+        sim = spc_sim()
+        prod = int(base.get("prod_count", 0) or 0)
+        last_prod = int(sim.get("last_prod", 0) or 0)
+
+        if prod > last_prod:
+            # 10개 단위 도달 시 트리거
+            if prod % 10 == 0 and prod > 0:
+                spc_sim.set({
+                    "timer": 3,  # 3틱 동안 카드 빨간색 유지
+                    "mold": random.choice(MOLD_CODES) if MOLD_CODES else "-",
+                    "last_prod": prod
+                })
+            else:
+                # 일반 증가: 타이머가 켜져 있으면 1씩 감소
+                t = max(sim.get("timer", 0) - 1, 0)
+                spc_sim.set({**sim, "timer": t, "last_prod": prod})
         else:
-            anomaly_streak.set(0)
+            # 생산이 안 변해도 타이머는 서서히 감소
+            if sim.get("timer", 0) > 0:
+                spc_sim.set({**sim, "timer": sim["timer"] - 1})
 
-        return base
-
-    # 실시간 예측 + 연속 카운트(팝업 X)
+    # 예측 저장
     @reactive.effect
     @reactive.event(current_data)
     def _predict_and_store():
         df = current_data()
         if df.empty: return
-        latest = df.iloc[-1]
-        mold = str(latest["mold_code"])
+        latest = df.iloc[-1]; mold = str(latest["mold_code"])
         res, err = predict_quality(pd.DataFrame([latest]), mold)
         if res is not None and err is None:
             actual = int(latest.get("passorfail", np.nan)) if "passorfail" in latest else np.nan
@@ -314,54 +365,61 @@ def server_operations(input, output, session):
                 "datetime": latest.get("datetime", pd.Timestamp.now()),
                 "mold": res["mold"], "pred": res["pred"], "prob": res["prob"], "actual": actual
             }])
-            merged = pd.concat([hist, new], ignore_index=True)
-            prediction_data.set(merged)
-            prediction_state.set(merged)
+            prediction_data.set(pd.concat([hist, new], ignore_index=True))
+            prediction_state.set(prediction_data())
+            defect_streak.set(defect_streak() + 1 if res["pred"] == 1 else 0)
 
-            # 연속 불량 예측 카운트만 관리
-            if res["pred"] == 1:
-                defect_streak.set(defect_streak() + 1)
-            else:
-                defect_streak.set(0)
-
-    # ✅ 상태 요약 사전 계산(계산 전용 이펙트)
+    # 상태 요약(불량 즉시 반응 + CUTOFFS + 랜덤 SPC 반영)
     @reactive.effect
-    @reactive.event(current_data)   # 새 배치 들어올 때만 갱신 (필요시 prediction_data/detected_data도 이벤트로 추가 가능)
+    @reactive.event(current_data)
     def _update_overview_state():
-        # 연속 카운터 기준 활성화
-        pred_active = defect_streak() >= N_CONSECUTIVE
-        anom_active = anomaly_streak() >= N_CONSECUTIVE
-
-        # 보조 텍스트: 최근 값
-        prob_txt = ""
         pred_df = prediction_data()
-        if not pred_df.empty and not pd.isna(pred_df.iloc[-1].get("prob", np.nan)):
-            prob_txt = f"{float(pred_df.iloc[-1]['prob']) * 100:.1f}%"
+        latest_defect_now, prob_txt = False, ""
+        if not pred_df.empty:
+            last = pred_df.iloc[-1]
+            try:
+                latest_defect_now = int(last.get("pred", 0)) == 1
+            except:
+                latest_defect_now = False
+            if not pd.isna(last.get("prob", np.nan)):
+                prob_txt = f"{float(last['prob']) * 100:.1f}%"
 
-        score_txt = ""
         det_df = detected_data()
+        score_txt = ""
         if not det_df.empty and "anomaly_score" in det_df.columns:
             try:
                 score_txt = f"{det_df[det_df['anomaly'] == -1]['anomaly_score'].iloc[-1]:.3f}"
-            except Exception:
+            except:
                 pass
 
-        # SPC/임계 (단순 규칙) — metrics()는 여기서 한 번만 호출
-        m = metrics()
-        spc_breach = (m.get("oee", 0) < 0.6) or (m.get("good_rate", 100) < 92.0)
-        thresh_breach = (
-            (m.get("oee", 0) < THRESHOLDS["oee_min"]) or
-            (m.get("good_rate", 100) < THRESHOLDS["good_rate_min"]) or
-            (m.get("cycle_time", 0) > THRESHOLDS["cycle_time_max"])
-        )
+        # ✅ 관리도 이탈은 랜덤 시뮬레이터로 판단
+        spc_active = spc_sim()["timer"] > 0
+
+        # 임계 위반(최근 1건)
+        thresh_breach = False
+        df = current_data()
+        if not df.empty:
+            row = df.iloc[-1]
+            for key, lim in CUTOFFS.items():
+                candidates = CUTOFF_ALIASES.get(key, [key])
+                col = next((c for c in candidates if c in row.index), None)
+                if col is None: continue
+                val = row.get(col)
+                if pd.isna(val): continue
+                low = lim.get("low"); high = lim.get("high")
+                if (low is not None and val < low) or (high is not None and val > high):
+                    thresh_breach = True; break
 
         overview_state.set({
-            "pred_active": pred_active, "pred_prob": prob_txt,
-            "anom_active": anom_active, "anom_score": score_txt,
-            "spc_breach": spc_breach, "thresh_breach": thresh_breach
+            "pred_active": latest_defect_now or (defect_streak() >= N_CONSECUTIVE),
+            "pred_prob": prob_txt,
+            "anom_active": anomaly_streak() >= N_CONSECUTIVE,
+            "anom_score": score_txt,
+            "spc_breach": spc_active,      # ✅ 여기!
+            "thresh_breach": thresh_breach,
         })
 
-    # ---- 상태 요약 4칸(렌더 전용) ----
+    # 상태 요약 렌더
     def _flag_card(title, active, desc, icon="•"):
         klass = "flag-card danger" if active else "flag-card ok"
         return ui.div(
@@ -375,72 +433,64 @@ def server_operations(input, output, session):
     @output
     @render.ui
     def status_overview():
-        s = overview_state()  # ✅ 계산된 값만 읽음
+        s = overview_state()
+        # 관리도 이탈 카드에 어떤 몰드가 걸렸는지도 표시
+        spc_mold = spc_sim().get("mold", "-")
+        spc_desc = "Rule 위반 감지" + (f" (몰드 {spc_mold})" if s["spc_breach"] and spc_mold not in ["", "-"] else "")
         return ui.div(
             _flag_card("불량예측", s["pred_active"],
                        f"불량확률: {s['pred_prob']}" if s["pred_prob"] else "최근 예측 정상", icon="🧪"),
             _flag_card("이상탐지", s["anom_active"],
                        f"Anomaly score: {s['anom_score']}" if (s["anom_active"] and s["anom_score"]) else "최근 이상 없음", icon="⚠️"),
-            _flag_card("관리도 이탈", s["spc_breach"],
-                       "Rule breach 감지" if s["spc_breach"] else "정상", icon="📏"),
+            _flag_card("관리도 이탈", s["spc_breach"], spc_desc if s["spc_breach"] else "정상", icon="📏"),
             _flag_card("임계값", s["thresh_breach"],
                        "임계 초과/미달" if s["thresh_breach"] else "정상", icon="🎚️"),
             class_="flag-row"
         )
 
-    # ---- 기존 출력 ----
-    @output
+    # KPI 텍스트
+    @output 
     @render.text
-    def abnormal_count():
-        return f"{metrics()['abnormal']}"
-
-    @output
+    def abnormal_count(): return f"{metrics_state().get('abnormal', 0)}"
+    @output 
     @render.text
-    def good_rate():
-        return f"{metrics().get('good_rate', 0):.1f}%"
-
-    @output
+    def good_rate(): return f"{metrics_state().get('good_rate', 0):.1f}%"
+    @output 
     @render.text
-    def prod_count():
-        return f"{metrics().get('prod_count', 0)}"
-
-    @output
+    def prod_count(): return f"{metrics_state().get('prod_count', 0)}"
+    @output 
     @render.text
-    def cycle_time():
-        return f"{metrics().get('cycle_time', 0):.1f}s"
-
-    @output
+    def cycle_time(): return f"{metrics_state().get('cycle_time', 0):.1f}s"
+    @output 
     @render.text
-    def oee_value():
-        return f"{metrics().get('oee', 0)*100:.1f}%"
+    def oee_value(): return f"{metrics_state().get('oee', 0)*100:.1f}%"
 
+    # ▶ 센서 그래프: 실제 datetime X축
     @output
     @render.plot
     def live_plot():
-        return plot_live(current_data(), input.sensor_select())
+        return plot_live(plot_view(), input.sensor_select())
 
     @output
     @render.plot
-    def oee_chart():
-        return plot_oee(metrics())
+    def oee_chart(): return plot_oee(metrics_state())
 
     @output
     @render.plot
-    def mold_ratio():
-        return plot_mold_ratio(metrics()["molds"])
+    def mold_ratio(): return plot_mold_ratio(metrics_state().get("molds", {}))
 
-    # 몰드 카드(5분할 그리드용)
+    # 몰드 카드
     for mold in MOLD_CODES:
         @output(id=f"mold_{mold}_pie")
         @render.plot
         def mold_pie(mold=mold):
-            data = metrics()["molds"].get(mold, {"good": 0, "defect": 0, "rate": 0})
+            data = metrics_state().get("molds", {}).get(mold, {"good": 0, "defect": 0, "rate": 0})
             return plot_mold_pie(data)
 
         @output(id=f"mold_{mold}_info")
         @render.ui
         def mold_info(mold=mold):
-            m = metrics()["molds"].get(mold, {"good": 0, "defect": 0, "rate": 0})
+            m = metrics_state().get("molds", {}).get(mold, {"good": 0, "defect": 0, "rate": 0})
             return ui.div(
                 ui.p(f"✅ 양품: {m['good']} EA", class_="mb-1 text-success fw-bold"),
                 ui.p(f"❌ 불량: {m['defect']} EA", class_="mb-1 text-danger fw-bold"),
@@ -461,15 +511,16 @@ def server_operations(input, output, session):
         if df.empty or "anomaly" not in df.columns:
             return pd.DataFrame({"상태": ["최근 이상치 없음"]})
         abn = df[df["anomaly"] == -1]
-        return abn.tail(5).round(2) if not abn.empty else pd.DataFrame({"상태": ["최근 이상치 없음"]})
+        return abn.tail(5).round(2) if not abn.empty else pd.DataFrame({"상태": ["최근 이상 없음"]})
 
-    # 이벤트 피드(최근 5개) — status_overview와 완전히 분리
+    # ▶ 이벤트 피드(임계값 + 랜덤 관리도 포함)
     @output
     @render.table
-    @reactive.event(current_data)  # 새 배치 들어올 때만 테이블 갱신
+    @reactive.event(current_data)
     def event_feed():
         rows = []
-        # 불량예측
+
+        # 1) 불량예측
         pred = prediction_data()
         if not pred.empty:
             for _, r in pred.sort_values("datetime").tail(10).iterrows():
@@ -479,27 +530,48 @@ def server_operations(input, output, session):
                     "몰드": r.get("mold", ""),
                     "메시지": f"{'불량' if int(r.get('pred',0))==1 else '양품'} (확률 {(float(r.get('prob',0))*100):.1f}%)"
                 })
-        # 이상탐지
+
+        # 2) 이상탐지
         det = detected_data()
         if not det.empty and "anomaly" in det.columns:
             for _, r in det[det["anomaly"] == -1].tail(10).iterrows():
                 score = r.get("anomaly_score", np.nan)
                 msg = f"이상탐지 발생 (score={score:.3f})" if not pd.isna(score) else "이상탐지 발생"
-                rows.append({"시간": r.get("datetime",""), "유형":"이상탐지", "몰드": r.get("mold_code",""), "메시지": msg})
-        # 관리도/임계(요약) — overview_state/metrics 직접 사용
-        m = metrics()
-        spc_breach = (m.get("oee", 0) < 0.6) or (m.get("good_rate", 100) < 92.0)
-        thresh_breach = (
-            (m.get("oee", 0) < THRESHOLDS["oee_min"]) or
-            (m.get("good_rate", 100) < THRESHOLDS["good_rate_min"]) or
-            (m.get("cycle_time", 0) > THRESHOLDS["cycle_time_max"])
-        )
-        if spc_breach:
-            rows.append({"시간": pd.Timestamp.now(), "유형":"관리도", "몰드":"-", "메시지":"Rule breach 감지"})
-        if thresh_breach:
-            rows.append({"시간": pd.Timestamp.now(), "유형":"임계값", "몰드":"-", "메시지":"임계 초과/미달"})
+                rows.append({"시간": r.get("datetime",""), "유형":"이상탐지",
+                             "몰드": r.get("mold_code",""), "메시지": msg})
+
+        # 3) 임계값 위반(최근 20건)
+        df = current_data()
+        if not df.empty:
+            chk = df.tail(20)
+            for _, rr in chk.iterrows():
+                ts = rr.get("datetime", pd.NaT)
+                mold = rr.get("mold_code", "")
+                for key, lim in CUTOFFS.items():
+                    candidates = CUTOFF_ALIASES.get(key, [key])
+                    col = next((c for c in candidates if c in rr.index), None)
+                    if col is None: continue
+                    val = rr.get(col)
+                    if pd.isna(val): continue
+                    low = lim.get("low"); high = lim.get("high")
+                    violated = (low is not None and val < low) or (high is not None and val > high)
+                    if violated:
+                        range_txt = []
+                        if low is not None: range_txt.append(f"≥{low}")
+                        if high is not None: range_txt.append(f"≤{high}")
+                        msg = f"{col}={val:.2f} (허용: {' & '.join(range_txt)})"
+                        rows.append({"시간": ts, "유형": "임계값", "몰드": mold, "메시지": msg})
+
+        # 4) ✅ 랜덤 관리도 이탈 로그
+        sim = spc_sim()
+        if sim.get("timer", 0) > 0:
+            rows.append({
+                "시간": pd.Timestamp.now(),
+                "유형": "관리도",
+                "몰드": sim.get("mold", "-"),
+                "메시지": "Rule 위반 감지"
+            })
 
         if not rows:
             return pd.DataFrame({"정보": ["최근 알림 없음"]})
-        feed = pd.DataFrame(rows).sort_values("시간").tail(5)
-        return feed
+        return pd.DataFrame(rows).sort_values("시간").tail(5)

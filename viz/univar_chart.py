@@ -1,3 +1,4 @@
+# viz/univar_chart.py
 import numpy as np
 import pandas as pd
 import plotly.graph_objs as go
@@ -40,7 +41,7 @@ def make_univar_cards(input, df_view, df_baseline, PROCESS_GROUPS):
                 current_val = series.iloc[-1]
 
             # ✅ molten_temp만 표준화 한계 사용
-            if var == "molten_temp":
+            if var == "molten_temp" or var == "cast_pressure":
                 cl = info.get("cl", 0.0)
                 ucl = info.get("ucl_standardized", info.get("ucl", 3 * sigma))
                 lcl = info.get("lcl_standardized", info.get("lcl", -3 * sigma))
@@ -544,7 +545,7 @@ def make_univar_modal(input, df_view, df_baseline):
             residuals = np.asarray(x) - np.mean(x)
 
         # ✅ molten_temp만 표준화 한계 사용
-        if var == "molten_temp":
+        if var == "molten_temp" or var == "cast_pressure":
             cl = info.get("cl", 0.0)
             ucl = info.get("ucl_standardized", info.get("ucl", 3 * sigma))
             lcl = info.get("lcl_standardized", info.get("lcl", -3 * sigma))

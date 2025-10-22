@@ -86,7 +86,7 @@ def ui_control():
                         {
                             "style": "display:flex; justify-content:space-between; align-items:center;"
                         },
-                        ui.h4("🔬 다변량 관리도 (Hotelling T²)", style="margin:0;"),
+                        ui.h4("다변량 관리도 (Hotelling T²)", style="margin:0;"),
                         ui.download_button(
                             "download_report_btn",
                             "📘 보고서 PDF 받기",
@@ -97,7 +97,7 @@ def ui_control():
                 ui.layout_columns(
                     ui.output_ui("t2_plot"),
                     ui.div(
-                        ui.h5("📄 T² 이탈 로그", class_="mb-2"),
+                        ui.h5("T² 이탈 로그", class_="mb-2"),
                         ui.div(ui.output_table("t2_table"), class_="scroll-table"),
                     ),
                     col_widths=[7, 5],
@@ -106,13 +106,13 @@ def ui_control():
 
             # 📈 단변량 관리도
             ui.card(
-                ui.card_header("📈 단변량 관리도 (클릭하여 상세 차트 보기)"),
+                ui.card_header("단변량 관리도 (클릭하여 상세 차트 보기)"),
                 ui.output_ui("variable_cards"),
             ),
 
             # 🕒 전체 이탈 로그
             ui.card(
-                ui.card_header("🕒 전체 이탈 로그 (단변량 + 다변량 통합)"),
+                ui.card_header("전체 이탈 로그 (단변량 + 다변량 통합)"),
                 ui.div(
                     ui.output_table("timeline_table"),
                     class_="scroll-table",

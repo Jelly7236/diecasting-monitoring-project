@@ -162,63 +162,63 @@ def best_specs_in_cp_range(mu: float, sigma: float,
     Cp, Cpk = cp_cpk_from(mu, sigma, L, U)
     return L, U, Cp, Cpk, cp_chosen
 
-# ========= 실행 =========
-def main():
-    if not DATA_PATH.exists():
-        raise FileNotFoundError(f"데이터 파일이 없어요: {DATA_PATH.resolve()}")
+# # ========= 실행 =========
+# def main():
+#     if not DATA_PATH.exists():
+#         raise FileNotFoundError(f"데이터 파일이 없어요: {DATA_PATH.resolve()}")
 
-    raw = pd.read_excel(DATA_PATH, sheet_name=SHEET_NAME)
+#     raw = pd.read_excel(DATA_PATH, sheet_name=SHEET_NAME)
 
-    # 단위 변환
-    df = apply_unit_conversions(raw, UNIT_CONV)
+#     # 단위 변환
+#     df = apply_unit_conversions(raw, UNIT_CONV)
 
-    rows = []
-    for col in CANDIDATES:
-        if col not in df.columns:
-            continue
-        x = to_numeric(df[col]).dropna().to_numpy(float)
-        if x.size < 2:
-            rows.append({
-                "Variable": col, "N_valid": x.size,
-                "Mean": np.nan, "Std_overall": np.nan, "Std_within(MR)": np.nan,
-                "Best_LSL": np.nan, "Best_USL": np.nan,
-                "Chosen_Cp": np.nan, "Cp_overall": np.nan, "Cpk_overall": np.nan,
-                "Cp_within": np.nan, "Cpk_within": np.nan
-            })
-            continue
+#     rows = []
+#     for col in CANDIDATES:
+#         if col not in df.columns:
+#             continue
+#         x = to_numeric(df[col]).dropna().to_numpy(float)
+#         if x.size < 2:
+#             rows.append({
+#                 "Variable": col, "N_valid": x.size,
+#                 "Mean": np.nan, "Std_overall": np.nan, "Std_within(MR)": np.nan,
+#                 "Best_LSL": np.nan, "Best_USL": np.nan,
+#                 "Chosen_Cp": np.nan, "Cp_overall": np.nan, "Cpk_overall": np.nan,
+#                 "Cp_within": np.nan, "Cpk_within": np.nan
+#             })
+#             continue
 
-        mu = float(np.mean(x))
-        sigma_overall = float(np.std(x, ddof=1))
-        sigma_within  = estimate_sigma_within_mr(x)
+#         mu = float(np.mean(x))
+#         sigma_overall = float(np.std(x, ddof=1))
+#         sigma_within  = estimate_sigma_within_mr(x)
 
-        floor = PHYSICAL_FLOOR.get(col, None)
-        ceil  = PHYSICAL_CEILING.get(col, None)
+#         floor = PHYSICAL_FLOOR.get(col, None)
+#         ceil  = PHYSICAL_CEILING.get(col, None)
 
-        # 전체σ 기준 최적 스펙 (Cpk 최대)
-        L, U, Cp_o, Cpk_o, cp_chosen = best_specs_in_cp_range(
-            mu, sigma_overall, CP_MIN, CP_MAX, floor=floor, ceiling=ceil
-        )
-        # 같은 L/U로 within-σ 기준도 참고 계산
-        Cp_w, Cpk_w = cp_cpk_from(mu, sigma_within, L, U)
+#         # 전체σ 기준 최적 스펙 (Cpk 최대)
+#         L, U, Cp_o, Cpk_o, cp_chosen = best_specs_in_cp_range(
+#             mu, sigma_overall, CP_MIN, CP_MAX, floor=floor, ceiling=ceil
+#         )
+#         # 같은 L/U로 within-σ 기준도 참고 계산
+#         Cp_w, Cpk_w = cp_cpk_from(mu, sigma_within, L, U)
 
-        rows.append({
-            "Variable": col, "N_valid": x.size,
-            "Mean": mu, "Std_overall": sigma_overall, "Std_within(MR)": sigma_within,
-            "Best_LSL": L, "Best_USL": U,
-            "Chosen_Cp": cp_chosen,
-            "Cp_overall": Cp_o, "Cpk_overall": Cpk_o,
-            "Cp_within": Cp_w, "Cpk_within": Cpk_w
-        })
+#         rows.append({
+#             "Variable": col, "N_valid": x.size,
+#             "Mean": mu, "Std_overall": sigma_overall, "Std_within(MR)": sigma_within,
+#             "Best_LSL": L, "Best_USL": U,
+#             "Chosen_Cp": cp_chosen,
+#             "Cp_overall": Cp_o, "Cpk_overall": Cpk_o,
+#             "Cp_within": Cp_w, "Cpk_within": Cpk_w
+#         })
 
-    res = pd.DataFrame(rows).sort_values("Cpk_overall", na_position="last").reset_index(drop=True)
-    show = ["Variable","N_valid","Best_LSL","Best_USL","Chosen_Cp",
-            "Mean","Std_overall","Cp_overall","Cpk_overall",
-            "Std_within(MR)","Cp_within","Cpk_within"]
-    print("\n===== Best Specs under Cp ∈ [%.2f, %.2f] (maximize Cpk) =====" % (CP_MIN, CP_MAX))
-    if not res.empty:
-        print(res[show].to_string(index=False))
-    else:
-        print("대상 컬럼이 없습니다.")
+#     res = pd.DataFrame(rows).sort_values("Cpk_overall", na_position="last").reset_index(drop=True)
+#     show = ["Variable","N_valid","Best_LSL","Best_USL","Chosen_Cp",
+#             "Mean","Std_overall","Cp_overall","Cpk_overall",
+#             "Std_within(MR)","Cp_within","Cpk_within"]
+#     print("\n===== Best Specs under Cp ∈ [%.2f, %.2f] (maximize Cpk) =====" % (CP_MIN, CP_MAX))
+#     if not res.empty:
+#         print(res[show].to_string(index=False))
+#     else:
+#         print("대상 컬럼이 없습니다.")
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()

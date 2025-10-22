@@ -43,6 +43,31 @@ def sticky_toolbar():
 # ============================== 페이지 UI ===============================
 def page_ui():
     pdf_support = [
+        ui.tags.style("""
+#btn_update_date, #btn_apply, #btn_pdf {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 8px 16px;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    font-weight: 600;
+    font-size: 14px;
+    line-height: 1.2;
+    transition: all 0.15s ease-in-out;
+}
+#btn_update_date { background-color: #4B5563; color: #fff; }
+#btn_apply { background-color: #2563EB; color: #fff; }
+#btn_pdf { background-color: #047857; color: #fff; }
+#btn_update_date:hover, #btn_apply:hover, #btn_pdf:hover {
+    filter: brightness(0.92);
+}
+#btn_update_date:disabled, #btn_apply:disabled, #btn_pdf:disabled {
+    opacity: 0.7;
+    cursor: not-allowed;
+}
+        """),
         ui.tags.script(src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"),
         ui.tags.script(src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"),
         ui.tags.script("""
@@ -138,7 +163,7 @@ def page_ui():
         # 4) 변수별 관계분석 (표 + 그래프)
         section(
             "변수별 관계분석",
-            "이탈변수/SHAP 기준 ‘변수+상태’ 기여횟수 Top 5 — (원인 기여 횟수 = SHAP횟수 + HIGH횟수 + LOW횟수)"
+            "이탈변수/SHAP 기준 ‘변수+상태’ 사건횟수 Top 5 — (원인 분석 횟수 = SHAP횟수 + HIGH횟수 + LOW횟수)"
         ),
         ui.div(
             ui.card(ui.card_header("순위표 · Top 5"), ui.output_ui("var_rel_table"), style=MCARD),

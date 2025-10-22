@@ -867,9 +867,10 @@ def server_cause(input, output, session):
                           xaxis_title="변수(상태)",
                           yaxis_title="원인 기여 횟수",
                           legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                          annotations=[dict(
-                              x=0, y=-0.28, xref="paper", yref="paper",
-                              text="원인 기여 횟수 = SHAP횟수 + HIGH횟수 + LOW횟수",
-                              showarrow=False, align="left", font=dict(color="#6b7280")
-                          )])
+                        #   annotations=[dict(
+                        #       x=0, y=-0.28, xref="paper", yref="paper",
+                        #     #   text="원인 기여 횟수 = SHAP횟수 + HIGH횟수 + LOW횟수",
+                        #       showarrow=False, align="left", font=dict(color="#6b7280")
+                        #   )]
+                          )
         return fig_html(fig, 340)
