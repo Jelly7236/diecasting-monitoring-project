@@ -8,7 +8,7 @@ from sklearn.metrics import confusion_matrix, roc_curve, auc, precision_recall_c
 from shared import prediction_state
 
 # ===== 모니터링 설정 =====
-MON_BATCH_SIZE = 200          # 배치 크기
+MON_BATCH_SIZE = 30          # 배치 크기
 MON_LOOKBACK_BATCHES = 5      # 최근 몇 배치를 볼지(총 행수 = 배치 크기 * 개수)
 INCLUDE_PARTIAL_BATCH = False  # 마지막 부분 배치 포함 여부
 X_ALIGN = "end"               # "end" or "center" (배치의 끝/중앙 시간)

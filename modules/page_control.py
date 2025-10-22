@@ -46,8 +46,20 @@ def ui_control():
     return ui.page_fluid(
         ui.head_content(ui.tags.link(rel="stylesheet", href="/css/control.css"),
                         ui.tags.link(rel="stylesheet", href="/css/control_enhanced.css")),
+        
+        # 헤더
         ui.div(
-            ui.h3("📊 공정 관리 상태 분석", class_="text-center mb-3"),
+            ui.h2("공정 관리 상태 분석", class_="title"),
+            # ui.div(
+            #     ui.h4("전자교반 3라인 2호기 TM Carrier RH", class_="machine"),
+            #     ui.div(ui.output_ui("working_badge"), ui.output_ui("tryshot_badge"), class_="badge-row"),
+            #     class_="machine-row",
+            # ),
+            class_="header",
+        ),
+        
+        ui.div(
+            # ui.h3("📊 공정 관리 상태 분석", class_="text-center mb-3"),
 
             # ⚙️ 분석 설정
             ui.card(
@@ -212,7 +224,61 @@ def server_control(input, output, session):
             return
         make_univar_modal(input, df_view, df_baseline)
 
-    # ==================== 타임라인 ====================
+
+
+    def _compute_t2_violations(df: pd.DataFrame, base: pd.DataFrame, features: list[str], alpha: float = 0.99):
+        """
+        baseline(base)으로 평균/공분산을 잡고, df에 대해 Hotelling T² 계산 후
+        경험적 한계(CL=baseline T²의 alpha 백분위수)를 넘는 이탈들 반환.
+        반환: list[dict] (타임라인에 바로 append 가능한 딕셔너리들)
+        """
+        out = []
+        if base is None or df is None or df.empty:
+            return out
+
+        cols = [c for c in features if c in df.columns]
+        if len(cols) < 2:
+            # 다변량이 의미 있으려면 최소 2변수 이상
+            return out
+
+        # 기준/대상 데이터 정리(결측 제거)
+        B = base[cols].dropna()
+        if len(B) < max(30, len(cols) + 5):
+            # 기준 데이터가 충분치 않으면 skip
+            return out
+
+        X = df[cols].dropna()
+        if X.empty:
+            return out
+
+        # 평균/공분산/역행렬
+        mu = B.mean().values
+        S = np.cov(B.values, rowvar=False)
+        try:
+            S_inv = np.linalg.inv(S)
+        except np.linalg.LinAlgError:
+            S_inv = np.linalg.pinv(S)
+
+        # T² 계산: T²_i = (x_i - mu)^T S^{-1} (x_i - mu)
+        diff_base = B.values - mu
+        T2_base = np.einsum("ij,jk,ik->i", diff_base, S_inv, diff_base)
+
+        diff = X.values - mu
+        T2 = np.einsum("ij,jk,ik->i", diff, S_inv, diff)
+
+        # 경험적 한계(CL)
+        CL = float(np.percentile(T2_base, alpha * 100.0))
+
+        # df 인덱스에 매핑
+        for idx_raw, t2_val in zip(X.index.tolist(), T2.tolist()):
+            if t2_val > CL:
+                out.append({
+                    "__idx__": idx_raw,       # 나중에 시간/몰드코드 매핑용
+                    "T2": float(t2_val),
+                    "CL": CL,
+                })
+        return out
+    
     @output
     @render.table
     def timeline_table():
@@ -224,24 +290,74 @@ def server_control(input, output, session):
         out_rows = []
         dtcol = "__dt__" if "__dt__" in df.columns else None
 
-        for var in FEATURES_ALL:
+        # 현재 선택된 공정 그룹(다변량 대상 특징)
+        proc_name = input.process_select()
+        features_mv = PROCESS_GROUPS.get(proc_name, [])
+        # 단변량 대상은 전체 FEATURES_ALL을 유지
+        features_uv = FEATURES_ALL
+
+        # ---- 단변량: Nelson rule 위반 수집 (+ 몰드 코드 포함)
+        for var in features_uv:
+            if var not in df.columns:
+                continue
             s = df[var].dropna()
             if len(s) < 10:
                 continue
-            if base is None or var not in base.columns or len(base) < 5:
+
+            # 기준선 통계
+            if base is None or var not in (base.columns if hasattr(base, "columns") else [] ) or len(base) < 5:
                 mu0, sd0 = s.mean(), s.std(ddof=1)
             else:
                 mu0, sd0 = base[var].mean(), base[var].std(ddof=1)
-            vio = check_nelson_rules(s.to_numpy(), mu0, mu0 + 3 * sd0, mu0 - 3 * sd0, sd0)
-            for (idx, r, desc, val) in vio[-20:]:
-                ts = df.iloc[s.index.min() + idx - 1][dtcol] if dtcol else np.nan
-                out_rows.append(
-                    {"시각": ts, "유형": "단변량", "변수": var, "룰": r, "설명": desc, "값": round(val, 3)}
-                )
+
+            vio = check_nelson_rules(
+                s.to_numpy(), mu0, mu0 + 3 * sd0, mu0 - 3 * sd0, sd0
+            )
+
+            # 최근 위반만 (너무 많으면 200개 제한 전에도 과다)
+            for (idx, r, desc, val) in vio[-200:]:
+                # s는 dropna 후이므로 원본 df 인덱스로 변환
+                src_idx = s.index.min() + idx - 1 if len(s.index) else None
+                if src_idx is None or src_idx not in df.index:
+                    continue
+                ts = df.loc[src_idx, dtcol] if (dtcol and src_idx in df.index) else np.nan
+                mold_code = df.loc[src_idx, "mold_code"] if "mold_code" in df.columns else input.mold()
+                out_rows.append({
+                    "시각": ts,
+                    "유형": "단변량",
+                    "몰드": str(mold_code),
+                    "변수": var,
+                    "룰": r,
+                    "설명": desc,
+                    "값": round(float(val), 3),
+                })
+
+        # ---- 다변량: Hotelling T² 이탈 수집 (+ 몰드 코드 포함)
+        t2_viol = _compute_t2_violations(df, base, features_mv, alpha=0.99)
+        for v in t2_viol:
+            src_idx = v["__idx__"]
+            ts = df.loc[src_idx, dtcol] if (dtcol and src_idx in df.index) else np.nan
+            mold_code = df.loc[src_idx, "mold_code"] if "mold_code" in df.columns else input.mold()
+            out_rows.append({
+                "시각": ts,
+                "유형": "다변량",
+                "몰드": str(mold_code),
+                "변수": "T²",
+                "룰": "T²>CL",
+                "설명": f"T²={v['T2']:.2f} > CL={v['CL']:.2f}",
+                "값": round(float(v["T2"]), 3),
+            })
 
         if not out_rows:
             return pd.DataFrame({"상태": ["최근 이상 없음"]})
+
         timeline = pd.DataFrame(out_rows)
+
+        # 시각 정렬(가능한 경우)
         if "시각" in timeline.columns and timeline["시각"].notna().any():
             timeline = timeline.sort_values("시각", ascending=False)
-        return timeline.head(200)
+
+        # 최종 컬럼 순서 정리
+        cols = ["시각", "유형", "몰드", "변수", "룰", "설명", "값"]
+        show_cols = [c for c in cols if c in timeline.columns]
+        return timeline[show_cols].head(200)
