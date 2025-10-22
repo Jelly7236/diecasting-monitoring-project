@@ -2,11 +2,15 @@
 from shiny import ui, render, reactive
 import pandas as pd
 import numpy as np
+import io
+import os
+import datetime
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import A4
+
 from shared import current_state
 from utils.control_utils import (
     check_nelson_rules,
-    calculate_hotelling_t2,
-    phaseII_ucl_t2,
     to_datetime_safe,
 )
 from viz.multivar_chart import render_multivar_plot, render_multivar_table
@@ -34,16 +38,14 @@ PROCESS_GROUPS = {
 }
 
 FEATURES_ALL = sum(PROCESS_GROUPS.values(), [])
-
-# ✅ 몰드코드 고정 리스트 (전체 제거, 기본값 8412)
 MOLD_CHOICES = ["8412", "8413", "8576", "8722", "8917"]
 
 
 # ==================== UI ====================
 def ui_control():
     return ui.page_fluid(
-        ui.head_content(ui.tags.link(rel="stylesheet", href="/css/control.css")),
-
+        ui.head_content(ui.tags.link(rel="stylesheet", href="/css/control.css"),
+                        ui.tags.link(rel="stylesheet", href="/css/control_enhanced.css")),
         ui.div(
             ui.h3("📊 공정 관리 상태 분석", class_="text-center mb-3"),
 
@@ -65,9 +67,21 @@ def ui_control():
                 ),
             ),
 
-            # 🔬 다변량 관리도
+            # 🔬 다변량 관리도 + 보고서 다운로드 버튼
             ui.card(
-                ui.card_header(ui.output_text("multivar_title")),
+                ui.card_header(
+                    ui.div(
+                        {
+                            "style": "display:flex; justify-content:space-between; align-items:center;"
+                        },
+                        ui.h4("🔬 다변량 관리도 (Hotelling T²)", style="margin:0;"),
+                        ui.download_button(
+                            "download_report_btn",
+                            "📘 보고서 PDF 받기",
+                            class_="btn btn-primary",
+                        ),
+                    )
+                ),
                 ui.layout_columns(
                     ui.output_ui("t2_plot"),
                     ui.div(
@@ -142,20 +156,10 @@ def server_control(input, output, session):
 
     # ==================== 다변량 관리도 ====================
     @output
-    @render.text
-    def multivar_title():
-        # ✅ 데이터 유무와 상관없이 제목은 항상 유지
-        process = input.process_select()
-        var_list = PROCESS_GROUPS[process]
-        mold = input.mold()
-        return f"🔬 다변량 관리도 (Hotelling T²) - {process} [몰드 {mold}] [{', '.join(var_list)}]"
-
-    @output
     @render.ui
     def t2_plot():
         df = df_view()
         if df.empty:
-            # ✅ 데이터 없음 시 메시지만 표시
             return ui.p(
                 "⚠️ 선택한 몰드코드에 해당하는 데이터가 없습니다.",
                 style="color:#6b7280; text-align:center; padding:2rem;",
@@ -169,6 +173,23 @@ def server_control(input, output, session):
         if df.empty:
             return pd.DataFrame({"상태": ["⚠️ 데이터 없음"]})
         return render_multivar_table(input, df_view, df_baseline, PROCESS_GROUPS)
+
+    # ==================== 📘 보고서 PDF 받기 ====================
+    @output
+    @render.download(filename="Final_Report.pdf")
+    def download_report_btn():
+        file_path = "www/files/final_report.pdf"
+        if not os.path.exists(file_path):
+            # 파일이 없을 경우 간단한 PDF 자동 생성
+            buf = io.BytesIO()
+            c = canvas.Canvas(buf, pagesize=A4)
+            c.drawString(100, 750, "⚠️ 보고서 파일을 찾을 수 없습니다.")
+            c.save()
+            buf.seek(0)
+            yield from buf
+        else:
+            with open(file_path, "rb") as f:
+                yield from f
 
     # ==================== 단변량 관리도 ====================
     @output
@@ -203,7 +224,6 @@ def server_control(input, output, session):
         out_rows = []
         dtcol = "__dt__" if "__dt__" in df.columns else None
 
-        # 단변량 로그
         for var in FEATURES_ALL:
             s = df[var].dropna()
             if len(s) < 10:

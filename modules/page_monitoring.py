@@ -7,6 +7,12 @@ from sklearn.metrics import confusion_matrix, roc_curve, auc, precision_recall_c
 # 🔹 추가: 실시간 예측 결과 공유용
 from shared import prediction_state
 
+# ===== 모니터링 설정 =====
+MON_BATCH_SIZE = 200          # 배치 크기
+MON_LOOKBACK_BATCHES = 5      # 최근 몇 배치를 볼지(총 행수 = 배치 크기 * 개수)
+INCLUDE_PARTIAL_BATCH = False  # 마지막 부분 배치 포함 여부
+X_ALIGN = "end"               # "end" or "center" (배치의 끝/중앙 시간)
+SHOW_BATCH_LINES = True       # 배치 경계선 표시
 
 # ==================== UI ====================
 def ui_monitoring():
@@ -39,7 +45,7 @@ def ui_monitoring():
         # 모델 설명 아코디언
         ui.div(
             ui.card(
-                ui.card_header("⚙️ 모델 설명"),
+                ui.card_header("모델 설명"),
                 ui.accordion(
                     ui.accordion_panel(
                         "개요 · 프로세스",
@@ -57,7 +63,7 @@ def ui_monitoring():
 1. **몰드코드 분리**
 2. **정렬/클린**: `datetime` 기준 이상치/결측 제거 → 오름차순 정렬
 3. **시계열 분할**
-   - Train **80%** / Test **20%** (과거→미래 고정)
+   - Train **80%** / Validation **20%** (과거→미래 고정)
    - Train 내부 검증: **TimeSeriesSplit** *(미래 누수 방지)*
 
 ---
@@ -111,8 +117,6 @@ def ui_monitoring():
 ### 테스트 평가 (20% 홀드아웃, 단 1회)
 - **임계값(τ)**: 기본 **0.50**  
 - **보고 지표**: Precision · Recall · F1 · **F2** · ROC AUC · AP · Confusion Matrix
-
-
                             """
                         ),
                         value="p_eval"
@@ -130,12 +134,12 @@ def ui_monitoring():
             ui.card(
                 ui.div(
                     ui.div(
-                        ui.span("📌 실시간 성능 지표", style="font-weight: 800; font-size: 1rem;"),
+                        ui.span("실시간 성능 지표", style="font-weight: 800; font-size: 1rem;"),
                         ui.div(
                             ui.input_select(
                                 "mon_mold_code",
                                 None,
-                                choices=["전체", "8412", "8413(New)", "8576(New)", "8722", "8917"],
+                                choices=["전체", "8412", "8413", "8576", "8722", "8917"],
                                 selected="전체",
                                 width="180px"
                             ),
@@ -152,7 +156,7 @@ def ui_monitoring():
         # ───────── 시계열 그래프 ─────────
         ui.div(
             ui.card(
-                ui.card_header("📈 실시간 예측 추이"),
+                ui.card_header("실시간 예측 추이"),
                 ui.output_ui("mon_timeseries_plot")
             ),
             class_="container section"
@@ -162,22 +166,18 @@ def ui_monitoring():
         ui.div(
             ui.layout_columns(
                 ui.card(
-                    ui.card_header("🧪 최근 샘플 10건"),
+                    ui.card_header("최근 샘플 10건"),
                     ui.div(ui.output_table("mon_sample_table"), class_="scroll-table")
                 ),
                 ui.card(
-                    ui.card_header("⚠️ 오류 샘플 (FP/FN)"),
+                    ui.card_header("오류 샘플 (FP/FN)"),
                     ui.div(ui.output_table("mon_error_table"), class_="scroll-table")
                 ),
-                col_widths=[6, 6]   # 필요하면 [7,5] 등으로 조정
+                col_widths=[6, 6]
             ),
             class_="container section"
         ),
     )
-
-
-
-
 
 MOLD_COL_CANDIDATES = ["mold_code", "moldcode", "mold", "MOLD_CODE"]
 
@@ -196,15 +196,13 @@ def _find_ts_col(df: pd.DataFrame):
             return c
     return None
 
-
 # ==================== SERVER ====================
 def server_monitoring(input, output, session):
 
     # ▼ 기본값(컨트롤 제거한 대신 상수로 둠)
-    DEFAULT_TAU = 0.5       # 임계값 τ
-    DEFAULT_NSHOW = 200     # 최근 N개로 KPI 계산
+    DEFAULT_TAU = 0.5               # 임계값 τ
+    DEFAULT_NSHOW = MON_BATCH_SIZE * MON_LOOKBACK_BATCHES  # 최근 N개(배치기반)
 
-    
     # --- 관측 프레임 (필터 + 정렬 + 윈도우 + 파생) ---
     @reactive.calc
     def view_df() -> pd.DataFrame:
@@ -227,7 +225,7 @@ def server_monitoring(input, output, session):
             df[ts_col] = pd.to_datetime(df[ts_col], errors="coerce")
             df = df.dropna(subset=[ts_col]).sort_values(ts_col)
 
-        # 최근 N개
+        # 최근 N개(최근 k배치만 유지)
         df = df.tail(DEFAULT_NSHOW).copy()
 
         # 파생
@@ -237,31 +235,23 @@ def server_monitoring(input, output, session):
         df["y_pred(τ)"] = (df["y_prob"] >= thr).astype(int)
         df["sample_id"] = np.arange(1, len(df) + 1)
 
-        # ── 여기서 'time' 보장 로직 추가 ─────────────────────────────
-        # datetime/timestamp/ts → time(HH:MM:SS) 파생
+        # ── 'time' 보장: datetime/timestamp/ts → time(HH:MM:SS) ──
         ts_for_time = next((c for c in ["time", "timestamp", "datetime", "ts"] if c in df.columns), None)
         if ts_for_time:
-            # 이미 'time'이 있으면 그대로 쓰고, 없으면 ts에서 뽑음
             if ts_for_time != "time" or df["time"].dtype != "object":
                 ts = pd.to_datetime(df[ts_for_time], errors="coerce")
                 df["time"] = ts.dt.strftime("%H:%M:%S")
         else:
-            # 정말 아무 시간열도 없으면 빈 컬럼만 추가(그래프에서 안내문)
             df["time"] = np.nan
-        # ─────────────────────────────────────────────────────────────
 
         # 반환 컬럼 구성
         cols = ["sample_id", "y_true", "y_prob", "y_pred(τ)"]
         if mold_col: cols = [mold_col] + cols
         if ts_col:   cols = [ts_col]   + cols
-        # 'time'은 그래프/표에서 쓰일 수 있으니 있으면 함께 반환
         if "time" in df.columns and "time" not in cols:
             cols = ["time"] + cols
 
         return df[cols]
-
-
-
 
     # --- 성능 지표 계산 ---
     @reactive.calc
@@ -302,7 +292,7 @@ def server_monitoring(input, output, session):
 
         # 보조 부제: 최근 N개 기준
         sel = input.mon_mold_code() if hasattr(input, "mon_mold_code") else "전체"
-        subtitle = f"{sel} · 최근 {m['n']}건 · τ={DEFAULT_TAU:.2f}"
+        subtitle = f"{sel} · 최근 {m['n']}건"
 
         return ui.div(
             kcard("정확도", f"{m['acc']:.3f}", subtitle),
@@ -312,6 +302,7 @@ def server_monitoring(input, output, session):
             class_="kpi-row"
         )
 
+    # --- 배치 기준 시계열 그래프 ---
     @output(id="mon_timeseries_plot")
     @render.ui
     def _mon_timeseries_plot():
@@ -328,19 +319,7 @@ def server_monitoring(input, output, session):
             else:
                 return ui.p("'time' 칼럼이 없습니다. time(시:분[:초]) 칼럼을 추가해 주세요.", class_="text-muted")
 
-        # 누적 지표 유틸
-        def prf1_cum(y_t_arr, y_p_arr):
-            tp = ((y_t_arr == 1) & (y_p_arr == 1)).astype(int).cumsum()
-            fp = ((y_t_arr == 0) & (y_p_arr == 1)).astype(int).cumsum()
-            fn = ((y_t_arr == 1) & (y_p_arr == 0)).astype(int).cumsum()
-            precision = tp / np.maximum(tp + fp, 1)
-            recall    = tp / np.maximum(tp + fn, 1)
-            f1        = (2 * precision * recall) / np.maximum(precision + recall, 1e-9)
-            return precision, recall, f1
-
-        fig = go.Figure()
-
-        # ✅ 'time'을 공통 기준일로 변환해 연속 시간축으로 사용(간격 왜곡 방지)
+        # time → 공통 기준일(2000-01-01)로 파싱
         t_parsed = pd.to_datetime(df["time"], errors="coerce")
         needs_rescan = t_parsed.isna() & df["time"].notna()
         if needs_rescan.any():
@@ -352,26 +331,67 @@ def server_monitoring(input, output, session):
         if dfd.empty:
             return ui.p("유효한 time 값이 없습니다.", class_="text-muted")
 
-        y_t = dfd["y_true"].astype(int).to_numpy()
-        y_p = dfd["y_pred(τ)"].astype(int).to_numpy()
-        prec, rec, f1 = prf1_cum(y_t, y_p)
+        n = len(dfd)
+        if n < (MON_BATCH_SIZE if not INCLUDE_PARTIAL_BATCH else 1):
+            return ui.p(f"배치 계산을 위해 최소 {MON_BATCH_SIZE}개 이상이 권장됩니다.", class_="text-muted")
 
-        fig.add_trace(go.Scatter(x=dfd["_tod"], y=prec, mode="lines+markers", name="Precision"))
-        fig.add_trace(go.Scatter(x=dfd["_tod"], y=rec,  mode="lines+markers", name="Recall"))
-        fig.add_trace(go.Scatter(x=dfd["_tod"], y=f1,   mode="lines+markers", name="F1"))
+        # 배치 인덱스
+        dfd["_batch"] = (np.arange(n) // MON_BATCH_SIZE).astype(int)
 
-        fig.update_xaxes(type="date", tickformat="%H:%M", title_text="하루 시간대 (HH:MM)")
+        # 완전 배치만 사용할 경우 필터
+        if not INCLUDE_PARTIAL_BATCH:
+            full_batches = (dfd["_batch"].value_counts().sort_index() >= MON_BATCH_SIZE)
+            keep_batches = set(full_batches[full_batches].index.tolist())
+            dfd = dfd[dfd["_batch"].isin(keep_batches)]
+            if dfd.empty:
+                return ui.p(f"{MON_BATCH_SIZE}개 단위의 완전 배치가 아직 없습니다.", class_="text-muted")
+
+        # 배치별 Precision/Recall/F1 계산
+        def prf1_for_group(g: pd.DataFrame):
+            yt = g["y_true"].astype(int).to_numpy()
+            yp = g["y_pred(τ)"].astype(int).to_numpy()
+            tp = ((yt == 1) & (yp == 1)).sum()
+            fp = ((yt == 0) & (yp == 1)).sum()
+            fn = ((yt == 1) & (yp == 0)).sum()
+            p  = tp / max(tp + fp, 1)
+            r  = tp / max(tp + fn, 1)
+            f1 = (2 * p * r) / max(p + r, 1e-9)
+            # x축 대표 시간
+            if X_ALIGN == "center":
+                mid_idx = len(g) // 2
+                x_time = g["_tod"].iloc[mid_idx]
+            else:  # "end"
+                x_time = g["_tod"].iloc[-1]
+            return pd.Series({"x_time": x_time, "precision": p, "recall": r, "f1": f1, "count": len(g)})
+
+        agg = dfd.groupby("_batch", sort=True, as_index=False).apply(prf1_for_group)
+        agg = agg.sort_values("x_time")
+
+        # Plotly
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=agg["x_time"], y=agg["precision"], mode="lines+markers", name=f"Precision[{MON_BATCH_SIZE}]"))
+        fig.add_trace(go.Scatter(x=agg["x_time"], y=agg["recall"],    mode="lines+markers", name=f"Recall[{MON_BATCH_SIZE}]"))
+        fig.add_trace(go.Scatter(x=agg["x_time"], y=agg["f1"],        mode="lines+markers", name=f"F1[{MON_BATCH_SIZE}]"))
+
+        # (선택) 배치 경계선: 각 배치 끝 시간에 세로선
+        if SHOW_BATCH_LINES:
+            end_times = dfd.groupby("_batch")["_tod"].max().sort_index().tolist()
+            for xt in end_times:
+                fig.add_vline(x=xt, line_width=1, line_dash="dot", opacity=0.2)
+
+        fig.update_xaxes(type="date", tickformat="%H:%M", title_text="시간")
         fig.update_layout(
             template="plotly_white",
             height=380,
             margin=dict(l=50, r=20, t=40, b=40),
-            yaxis=dict(title="누적 Score", range=[0, 1]),
+            yaxis=dict(title="Score", range=[0.0, 1.0]),
             hovermode="x unified",
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            title="누적 Precision/Recall/F1 (time 축)"
+            title=f"{MON_BATCH_SIZE}개 단위 Batch Precision/Recall/F1"
         )
-        return ui.HTML(fig.to_html(include_plotlyjs='cdn', div_id="mon_timeseries"))
+        fig.update_traces(hovertemplate="시간=%{x|%H:%M:%S}<br>Score=%{y:.3f}")
 
+        return ui.HTML(fig.to_html(include_plotlyjs='cdn', div_id="mon_timeseries"))
 
     # --- 샘플 테이블 (최근 10개) ---
     @output(id="mon_sample_table")
@@ -416,7 +436,6 @@ def server_monitoring(input, output, session):
     
         # 최근 10건만
         return df.head(10)
-    
     
     # --- 오류 샘플 테이블 (FP/FN만) ---
     @output(id="mon_error_table")
@@ -463,7 +482,5 @@ def server_monitoring(input, output, session):
             rename_dict[mold_col] = "몰드코드"
         err.rename(columns=rename_dict, inplace=True)
     
-        # 많을 수 있으니 최근 30건만 노출 (원하면 숫자 조절)
+        # 많을 수 있으니 최근 30건만 노출
         return err.head(30)
-    
-    

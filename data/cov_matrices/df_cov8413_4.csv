@@ -1,0 +1,6 @@
+var,upper_mold_temp1,upper_mold_temp2,lower_mold_temp1,lower_mold_temp2,Coolant_temperature
+upper_mold_temp1,11.616949,21.39322,37.664407,26.4,3.489831
+upper_mold_temp2,21.39322,56.298305,85.518644,54.657627,8.037288
+lower_mold_temp1,37.664407,85.518644,142.541243,96.341243,13.339548
+lower_mold_temp2,26.4,54.657627,96.341243,69.097175,8.990395
+Coolant_temperature,3.489831,8.037288,13.339548,8.990395,1.406497

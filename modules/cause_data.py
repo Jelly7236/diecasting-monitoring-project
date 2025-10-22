@@ -126,7 +126,7 @@ def load_fault_samples() -> pd.DataFrame:
         print("[FAULT-LOAD] no CSV found; returning empty frame")
         return pd.DataFrame(columns=["date","mold_code"])
 
-    print(f"[FAULT-LOAD] using: {used} shape={df.shape}")
+    # print(f"[FAULT-LOAD] using: {used} shape={df.shape}")
 
     # ---- 컬럼 표준화(느슨한 매칭) ----
     def _find(cols, cand):
@@ -183,7 +183,7 @@ def load_fault_samples() -> pd.DataFrame:
     tail  = [c for c in df.columns if c not in front]
     df = df[front + tail]
 
-    print(f"[FAULT-LOAD] columns(final): {list(df.columns)}")
+    # print(f"[FAULT-LOAD] columns(final): {list(df.columns)}")
     return df
 
 # --- ADD: 변수명→한글명 매핑 로더 ---
